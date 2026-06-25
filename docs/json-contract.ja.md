@@ -1,38 +1,41 @@
-# JSON 契約修正計画
+# JSON Machine Interface
 
 [English](json-contract.md) | [日本語](json-contract.ja.md)
 
-この文書は B01 の互換性契約と migration plan を記録します。
+この文書は、CLI、snapshot、MCP adapter が現在実装している machine-readable format を説明します。
 
-## 現在の契約上の問題
+## 利用できる format
 
-`usedu report --json` は、人間向け report に近い構造を serialize しています。
-CLI はすでに複数の report option を受け取りますが、それらが JSON output に一貫して反映されていません。
-agent-facing interface では、option が黙って無視されることは危険です。
+| Command | 用途 |
+| --- | --- |
+| `usedu report PATH --json` | 互換性のために維持する legacy JSON report |
+| `usedu report PATH --format json-v1` | legacy JSON report の明示形式 |
+| `usedu report PATH --format json-v2` | machine client 向けの versioned scan envelope |
+| `usedu report PATH --format ndjson` | JSON v2 envelope から生成する line-delimited event |
+| `usedu snapshot PATH` | full-depth JSON v2 snapshot を stdout に出力 |
+| `usedu compare BEFORE AFTER` | 2 つの snapshot file の versioned diff |
+| `usedu schema json-v2` | JSON v2 schema を出力 |
 
-現在の JSON output は、display path を identity のような field として使っています。
-これは表示用 data としてのみ許容できます。
-非 UTF-8 path では lossy UTF-8 conversion によって path が変化し得るためです。
+machine-readable output の stdout には progress を混ぜません。
 
 ## 互換性方針
 
-現在の `--json` output は current JSON format として維持します。
-既存 format をその場で変更せず、明示的な machine format を使います。
+legacy `--json` format は、すでに外部から観測できる構造であるため、その場で JSON v2 に置き換えません。
 
-```bash
-usedu report PATH --format json-v2
-usedu report PATH --format ndjson
-usedu schema json-v2
-usedu snapshot PATH > scan.usedu.json
-usedu compare before.usedu.json after.usedu.json
+新しい integration では、JSON v2、NDJSON、snapshot、または MCP の `structuredContent` を使います。
+
+現在の schema identifier:
+
+```text
+usedu.scan.v2
+usedu.diff.v1
 ```
 
-現在の `--json` flag は current JSON format の documented alias です。
-stdout には progress や diagnostics を混ぜません。
+consumer は field semantics を利用する前に `schemaVersion` を確認してください。
 
-## JSON v2 envelope
+## Scan envelope
 
-JSON v2 は versioned envelope を使います。
+JSON v2 の top-level structure:
 
 ```text
 schemaVersion
@@ -42,51 +45,193 @@ semantics
 effectiveOptions
 root
 entries
+topFiles
 issueSummary
 issues
 nextCursor
 ```
 
-`semantics` には次を含めます。
+### `status`
+
+`status.state` は次のいずれかです。
+
+- `complete`
+- `partial`
+- `cancelled`
+- `limitReached`
+
+現在の scanner は、permission error や traversal budget 到達時も、通常は `partial` envelope を正常に生成します。output truncation は `limitReached` です。
+
+`partialReasons` には、`issuesRecorded`、`resourceLimitReached`、`maxOutputEntries`、`maxOutputBytes` などの machine-readable reason が入ります。
+
+### `semantics`
+
+envelope は size calculation rule を記録します。
 
 - `sizeMetric: allocated`
 - accounting source
-- accounting accuracy
+- strict / approximate accuracy
 - hard-link policy
 - filesystem-boundary policy
 - symlink policy
-- directory own bytes を含むかどうか
+- directory own bytes を含むか
 - `reclaimableBytesKnown: false`
 
-`effectiveOptions` には、depth、top limit、file inclusion、directory-only filtering、sort、fast mode、cross-filesystem policy、`maxOutputEntries`、`maxOutputBytes` の解決済み値を含めます。
+client は `usedBytes` を reclaimable space の保証として扱ってはいけません。
 
-## option の扱い
+### `effectiveOptions`
 
-JSON v2 では、report option を黙って無視しません。
+envelope は、次の解決済み値を記録します。
 
-- `--top` は ranking-style result set と top-file result set の件数を制限する。
-- `--sort` は sort が要求される場所の deterministic ordering を制御する。
-- `--sort name` は `used`、`files`、`dirs` と同じく JSON v2 で利用できる。
-- `--dirs-only` は ranked entries を directory に絞る。
-- `--files` は structured result に top-file entries を含める。
-- `--depth` は tree view が要求される場合だけ retained tree depth を制御する。flat entry list は pagination または明示的な limit を使う。
-- `--errors` は issue details を含める。issue count は常に利用できる。
-- `--max-output-bytes` は structured section を削り、`limitReached` を設定して JSON v2/NDJSON output を制限する。
-- unsupported option combination は、走査前に structured CLI error として返す。
+- mode: `report` または `snapshot`
+- depth
+- top limit
+- file inclusion
+- summary mode
+- directory-only filter
+- sort
+- issue detail inclusion
+- fast mode
+- cross-filesystem policy
+- worker count
+- output entry / byte limit
+- display-path redaction
 
-## identity と path
+これにより consumer は、どの範囲を保持した結果か、2 つの result が比較可能かを判断できます。
 
-`displayPath` と `displayName` は表示専用です。
-JSON v2 では、scan-local reference として `entryId` を使い、snapshot の可逆的な path identity には `pathRef` を使います。
-lossy string を唯一の identity にしてはいけません。
+## Entry と path
 
-## test
+`root` は 1 件の `EntryDto` です。`entries` は flat array で、`parentEntryId` から retained tree を復元できます。
 
-B01 では次の golden test を追加します。
+各 entry の field:
 
-- current JSON compatibility
-- JSON v2 envelope fields
-- `effectiveOptions` への option 反映
-- `--top`、`--sort`、`--dirs-only`、`--files`、`--depth`
-- structured issues
-- 非 UTF-8 path と control-character path の display safety
+```text
+entryId
+parentEntryId
+kind
+displayName
+displayPath
+pathRef
+usedBytes
+ownBytes
+uniqueBytes
+sharedBytes
+counts
+complete
+issueCountBelow
+skippedCountBelow
+```
+
+`kind` は `directory`、`regularFile`、`symlink`、`other` のいずれかです。
+
+`counts` は次を分離します。
+
+- regular files
+- directories
+- symbolic links
+- other entries
+
+directory count は、その directory 自身を含みます。
+
+`displayName` と `displayPath` は表示専用で、lossy Unicode conversion を含む場合があります。`pathRef` は Unix path bytes を hexadecimal で保持し、snapshot と diff の可逆的な identity として使います。
+
+`entryId` は 1 回の scan 内で参照するための値であり、durable globally unique ID ではありません。
+
+`uniqueBytes` と `sharedBytes` は schema に存在しますが、現在は `null` です。scanner は hard-link allocation をまだこの 2 field に分離していません。
+
+## Report mode と snapshot mode
+
+同じ envelope type を 2 つの mode で使います。
+
+### Report mode
+
+`usedu report --format json-v2` は `effectiveOptions.mode: "report"` です。
+
+- `depth` は retained tree depth を制御
+- `top` は各 retained directory の selected children と `topFiles` を制限
+- `includeFiles` は CLI の `--files` で有効化
+- `dirsOnly` は ranked tree entries を directory に限定
+- issue details は `--errors` の場合だけ含める。aggregate count は常に利用可能
+
+### Snapshot mode
+
+`usedu snapshot` と MCP `usedu_scan` は `effectiveOptions.mode: "snapshot"` です。
+
+- snapshot CLI は、output byte cap で切り詰められない限り full tree と全 file entry を保持
+- MCP は tool argument の depth と filter に従って保持
+- MCP snapshot mode の `top` は `topFiles` を制限するが、`entries` は制限しない
+
+したがって、MCP の `top` は directory ranking limit ではありません。
+
+## Sort と determinism
+
+protocol layer の entry ordering は、requested sort key と path-byte tie-breaker を使います。
+
+MCP query tool の現在の順序は別です。
+
+- `usedu_list_children`: `usedBytes` 降順
+- `usedu_top_entries`: `usedBytes` 降順
+
+これらは original envelope sort をそのまま保持しません。
+
+## Output limit
+
+`maxOutputEntries` は `entries` を切り詰め、`status.state` を `limitReached` にします。
+
+`maxOutputBytes` は serialized size の best-effort target です。target に達するまで entries、top files、issue details の順に削除します。必須 envelope field だけで非常に小さい target を超える場合があります。
+
+truncation は stored result 自体を変更します。MCP query tool は、これらの limit で削除された data を復元できません。
+
+`nextCursor` は envelope truncation または report-mode ranking の続きがあることを表しますが、現在の MCP tool は omitted envelope data を取得する continuation として使いません。
+
+## NDJSON
+
+NDJSON は scan 完了後に JSON v2 envelope から生成します。line-delimited ですが、現在は live traversal stream ではありません。
+
+event sequence:
+
+```text
+scanStarted
+entry ...
+issue ...
+scanCompleted
+```
+
+各 line に `schemaVersion` と `scanId` が入ります。
+
+## Diff envelope
+
+`usedu compare` と MCP `usedu_compare` は `usedu.diff.v1` を返します。
+
+```text
+schemaVersion
+status
+beforeScanId
+afterScanId
+summary
+changes
+```
+
+diff identity は `pathRef` です。各 root と retained `entries` を比較し、`topFiles` と issue records は比較しません。
+
+どちらかの input が complete でない場合、または `semantics` が異なる場合、diff は inexact となります。inexact change は `uncertain` に分類します。
+
+caller は root と `effectiveOptions` も互換にする必要があります。現在の diff implementation は、すべての option mismatch を自動拒否するわけではありません。
+
+## Redaction
+
+CLI machine output は `--redact-paths`、MCP は `redactPaths: true` を使います。
+
+redaction は `displayName` と `displayPath` を `[redacted]` に置き換えます。machine identity を可逆に保つため、`pathRef` は残します。可逆的な path disclosure を許容できない場合は `pathRef` を転送しないでください。
+
+## Schema と test
+
+authoritative JSON v2 schema:
+
+```bash
+usedu schema json-v2
+```
+
+protocol test は option reflection、entry kind 別 count、非 UTF-8 path identity、output limit、structured scan-budget issue、snapshot diff を検証します。
+
+filesystem accounting term は [ファイルシステム意味論](semantics.ja.md)、MCP 固有の workflow と制約は [AI エージェントから MCP で `usedu` を使う](mcp-tools.ja.md) を参照してください。
