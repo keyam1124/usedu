@@ -10,7 +10,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use usedu::protocol::{
     build_scan_envelope, diff_snapshots, json_v2_schema, EnvelopeMode, EnvelopeOptions,
-    ScanEnvelope, SCAN_SCHEMA_VERSION,
+    ScanEnvelope, ScanStateDto, SCAN_SCHEMA_VERSION,
 };
 use usedu::scanner::{
     scan_recursive, DirSummary, EntryCounts, EntrySummary, FileSummary, ScanMetrics, ScanOptions,
@@ -116,6 +116,32 @@ fn json_v2_path_ref_is_reversible_for_non_utf8_paths() {
 
     assert!(entry.display_name.contains('\u{FFFD}'));
     assert!(entry.path_ref.bytes_hex.ends_with("6261642dff2d6e616d65"));
+}
+
+#[test]
+fn json_v2_reports_limit_reached_when_output_entries_are_capped() {
+    let fixture = Fixture::new("json-v2-output-limit");
+    write_file(&fixture.path("a.txt"), b"a");
+    write_file(&fixture.path("b.txt"), b"b");
+    let scan_options = ScanOptions {
+        include_files_in_output: true,
+        retained_tree_depth: 1,
+        ..Default::default()
+    };
+    let scan = scan_recursive(fixture.root(), &scan_options).unwrap();
+    let mut options = default_report_options();
+    options.max_output_entries = Some(1);
+
+    let envelope = build_scan_envelope(&scan, &options);
+
+    assert_eq!(envelope.status.state, ScanStateDto::LimitReached);
+    assert_eq!(envelope.entries.len(), 1);
+    assert!(envelope
+        .status
+        .partial_reasons
+        .iter()
+        .any(|reason| reason == "maxOutputEntries"));
+    assert!(envelope.next_cursor.is_some());
 }
 
 #[test]

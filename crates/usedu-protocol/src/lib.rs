@@ -234,6 +234,7 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
     let root = dir_entry(&scan.root, None, options);
     let mut entries = Vec::new();
     let mut next_cursor = None;
+    let mut limit_reached = false;
 
     if !options.summarize {
         let before_limit = entries.len();
@@ -254,6 +255,7 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
             if entries.len() > max_entries {
                 entries.truncate(max_entries);
                 next_cursor = Some(cursor_for_offset(before_limit.saturating_add(max_entries)));
+                limit_reached = true;
             }
         }
     }
@@ -279,16 +281,14 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
         schema_version: SCAN_SCHEMA_VERSION.to_string(),
         scan_id,
         status: ScanStatusDto {
-            state: if issue_total == 0 {
+            state: if limit_reached {
+                ScanStateDto::LimitReached
+            } else if issue_total == 0 {
                 ScanStateDto::Complete
             } else {
                 ScanStateDto::Partial
             },
-            partial_reasons: if issue_total == 0 {
-                Vec::new()
-            } else {
-                vec!["issuesRecorded".to_string()]
-            },
+            partial_reasons: partial_reasons(issue_total, limit_reached),
         },
         semantics: semantics(options),
         effective_options: effective_options(options),
@@ -312,6 +312,17 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
         issues,
         next_cursor,
     }
+}
+
+fn partial_reasons(issue_total: u64, limit_reached: bool) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if issue_total > 0 {
+        reasons.push("issuesRecorded".to_string());
+    }
+    if limit_reached {
+        reasons.push("maxOutputEntries".to_string());
+    }
+    reasons
 }
 
 pub fn render_json_v2(scan: &ScanResult, options: &EnvelopeOptions) -> anyhow::Result<String> {
