@@ -4,7 +4,7 @@
 
 `usedu` is a read-only disk usage analyzer for macOS terminals.
 It scans file-system metadata and displays allocated size as `Used`.
-It provides both a static report and an interactive TUI browser.
+It provides a static report, an interactive TUI browser, versioned machine output, and a local MCP interface for AI agents.
 
 `usedu` does not delete, move, or modify files.
 It also does not recommend cleanup actions.
@@ -91,7 +91,7 @@ Useful options:
     --dirs-only             Only show directories in ranking
     --sort used|name|files|dirs
                             Sort key. Default: used
-    --json                  Output JSON instead of rich text
+    --json                  Output legacy JSON instead of rich text
     --format text|json-v1|json-v2|ndjson
                             Output format. Default: text
     --errors                Show error details
@@ -103,9 +103,9 @@ Useful options:
 ```
 
 While scanning, rich-text mode shows throttled progress with entries, errors, and elapsed time.
-JSON mode and `--no-progress` suppress the progress indicator.
+Machine-readable formats and `--no-progress` suppress the progress indicator.
 
-`--json` keeps the current JSON report format.
+`--json` is the legacy JSON report format.
 Use `--format json-v2` for the versioned machine-readable scan envelope.
 Use `--format ndjson` for line-delimited scan events.
 
@@ -115,23 +115,51 @@ Print the JSON v2 schema with:
 usedu schema json-v2
 ```
 
-Create a snapshot on stdout with:
+Create a persistent snapshot through stdout with:
 
 ```bash
 usedu snapshot [PATH] > scan.usedu.json
 ```
 
-Compare two snapshots with:
+Compare two snapshot files with:
 
 ```bash
 usedu compare before.usedu.json after.usedu.json
 ```
 
-Run the MCP adapter with:
+## AI Agents and MCP
+
+Run the local foreground MCP server with one or more allowed roots:
 
 ```bash
-usedu mcp --stdio --allow-root [PATH]
+usedu mcp --stdio \
+  --allow-root "$HOME/Library" \
+  --allow-root "$HOME/Projects"
 ```
+
+An MCP-connected agent can:
+
+- identify the directories using the most allocated space;
+- find the largest regular files across a scanned tree;
+- drill into retained directory results without rescanning for each question;
+- explain permission errors, filesystem-boundary skips, and partial results;
+- run a long scan in the background, report progress, and request cancellation;
+- compare two in-memory scan sessions to show what grew or shrank.
+
+Typical requests include:
+
+```text
+Find the ten largest directories under ~/Library.
+Find the largest regular files in this project.
+Explain why the scan result is partial.
+Compare this directory before and after the build.
+```
+
+The server is read-only. It does not remove files or recommend cleanup actions. It reads metadata, not file contents.
+
+Allowed roots are fixed when the server starts. Sessions are held only in memory and disappear when the process exits. Queries operate on entries retained by the original scan, so `depth`, `includeFiles`, and output limits affect later drill-down.
+
+For workflows, tool behavior, and current limitations, see [Use `usedu` from an AI agent over MCP](docs/mcp-tools.md). For the permission and privacy boundary, see [Agent Security Boundary](docs/agent-security.md).
 
 ## Size Semantics
 
@@ -144,7 +172,7 @@ There is no `--logical` or `--allocated` mode switch.
 APFS clones, snapshots, compression, sparse files, and file-provider behavior can make reclaimable space differ from the displayed `Used` value.
 
 `--fast` keeps allocated-size accounting for files, but skips some expensive metadata work and uses more aggressive nested parallel traversal.
-It may omit a directory's own allocated bytes, over-count hard-linked files, and cross mounted filesystems that strict mode would skip.
+It may omit a directory's own allocated bytes, over-count hard-linked files, and traverse mounted filesystems that strict mode would skip.
 Use it when rough totals are acceptable and scan latency matters more than strict accounting.
 
 `--summarize` prints only the root total.
@@ -157,9 +185,10 @@ That combination is useful when you only need a total-only report and want the l
 - Hidden files and directories are included.
 - Package directories such as `.app` and `.photoslibrary` are ordinary directories.
 - Permission errors are recorded and do not abort the whole scan.
-- By default, mounted volumes on a different device are skipped.
-- Use `--cross-file-systems` to allow crossing file-system boundaries.
-- Regular files with multiple hard links are counted once per device/inode where practical.
+- Strict mode stays on the requested root filesystem by default.
+- Use `--cross-file-systems` to allow strict traversal across file-system boundaries.
+- Fast mode is approximate and may traverse mounted filesystems even without that option.
+- Regular files with multiple hard links are counted once per device/inode where practical in strict mode.
 
 Machine-readable JSON v2 separates regular file, directory, symlink, and other entry counts.
 It also includes display-only paths plus reversible `pathRef` values.
@@ -169,7 +198,7 @@ For protected macOS locations, grant Full Disk Access to the terminal app if exp
 ## Development
 
 Design constraints that should remain stable are documented in [docs/design.md](docs/design.md).
-The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr/0001-product-contract.md), filesystem terms are defined in [docs/semantics.md](docs/semantics.md), the JSON contract is in [docs/json-contract.md](docs/json-contract.md), the agent boundary is in [docs/agent-security.md](docs/agent-security.md), and the MCP tool contract is in [docs/mcp-tools.md](docs/mcp-tools.md).
+The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr/0001-product-contract.md), filesystem terms are defined in [docs/semantics.md](docs/semantics.md), the JSON interface is documented in [docs/json-contract.md](docs/json-contract.md), the agent boundary is in [docs/agent-security.md](docs/agent-security.md), and MCP workflows and tools are in [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ```bash
 cargo build
