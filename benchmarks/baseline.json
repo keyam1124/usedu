@@ -1,0 +1,216 @@
+{
+  "benchmark_profile": "scanner-baseline",
+  "fixture": {
+    "profile": "scanner-baseline",
+    "path": ".usedu-bench/scanner-benchmark",
+    "wide_roots": 4,
+    "wide_dirs_per_root": 64,
+    "wide_files_per_dir": 96,
+    "wide_subdirs_per_dir": 6,
+    "wide_files_per_subdir": 24,
+    "deep_depth": 48,
+    "deep_files_per_level": 12,
+    "hidden_files": 32,
+    "hard_link_entries": 5,
+    "symlink_entries": 3
+  },
+  "environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu_brand": "Apple M4",
+    "logical_cpus": 10,
+    "rustc_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "cargo_version": "cargo 1.96.0 (30a34c682 2026-05-25)"
+  },
+  "scenarios": [
+    {
+      "name": "recursive_default",
+      "runs_ms": [
+        39.515,
+        42.506,
+        37.617,
+        47.504,
+        38.494,
+        36.629,
+        36.509
+      ],
+      "median_ms": 38.494,
+      "min_ms": 36.509,
+      "max_ms": 47.504,
+      "entries_per_second": 1660148,
+      "entries_seen": 63906,
+      "used_bytes": 254160896,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "recursive_fast",
+      "runs_ms": [
+        32.938,
+        32.554,
+        33.602,
+        30.239,
+        33.061,
+        32.814,
+        32.658
+      ],
+      "median_ms": 32.814,
+      "min_ms": 30.239,
+      "max_ms": 33.602,
+      "entries_per_second": 1947525,
+      "entries_seen": 63906,
+      "used_bytes": 254193664,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "recursive_fast_summary",
+      "runs_ms": [
+        32.652,
+        33.646,
+        34.239,
+        28.319,
+        31.889,
+        34.686,
+        33.961
+      ],
+      "median_ms": 33.646,
+      "min_ms": 28.319,
+      "max_ms": 34.686,
+      "entries_per_second": 1899380,
+      "entries_seen": 63906,
+      "used_bytes": 254193664,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "recursive_jobs_1",
+      "runs_ms": [
+        120.423,
+        114.97,
+        116.621,
+        124.451,
+        111.621,
+        110.645,
+        110.287
+      ],
+      "median_ms": 114.97,
+      "min_ms": 110.287,
+      "max_ms": 124.451,
+      "entries_per_second": 555852,
+      "entries_seen": 63906,
+      "used_bytes": 254160896,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "recursive_with_files",
+      "runs_ms": [
+        47.337,
+        37.653,
+        45.854,
+        38.428,
+        37.615,
+        37.642,
+        37.25
+      ],
+      "median_ms": 37.653,
+      "min_ms": 37.25,
+      "max_ms": 47.337,
+      "entries_per_second": 1697215,
+      "entries_seen": 63906,
+      "used_bytes": 254160896,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "current_level_default",
+      "runs_ms": [
+        44.403,
+        38.331,
+        58.61,
+        38.179,
+        36.868,
+        36.705,
+        36.165
+      ],
+      "median_ms": 38.179,
+      "min_ms": 36.165,
+      "max_ms": 58.61,
+      "entries_per_second": 1673841,
+      "entries_seen": 63906,
+      "used_bytes": 254160896,
+      "file_count": 62057,
+      "dir_count": 1849,
+      "errors_count": 0
+    },
+    {
+      "name": "wide_root_default",
+      "runs_ms": [
+        11.662,
+        11.654,
+        13.877,
+        11.78,
+        11.465,
+        11.544,
+        11.769
+      ],
+      "median_ms": 11.662,
+      "min_ms": 11.465,
+      "max_ms": 13.877,
+      "entries_per_second": 1355595,
+      "entries_seen": 15809,
+      "used_bytes": 62914560,
+      "file_count": 15360,
+      "dir_count": 449,
+      "errors_count": 0
+    },
+    {
+      "name": "wide_root_fast",
+      "runs_ms": [
+        8.819,
+        8.487,
+        7.811,
+        8.774,
+        9.06,
+        8.795,
+        8.372
+      ],
+      "median_ms": 8.774,
+      "min_ms": 7.811,
+      "max_ms": 9.06,
+      "entries_per_second": 1801809,
+      "entries_seen": 15809,
+      "used_bytes": 62914560,
+      "file_count": 15360,
+      "dir_count": 449,
+      "errors_count": 0
+    },
+    {
+      "name": "wide_root_jobs_1",
+      "runs_ms": [
+        29.91,
+        27.97,
+        33.822,
+        26.527,
+        26.919,
+        27.263,
+        27.158
+      ],
+      "median_ms": 27.263,
+      "min_ms": 26.527,
+      "max_ms": 33.822,
+      "entries_per_second": 579878,
+      "entries_seen": 15809,
+      "used_bytes": 62914560,
+      "file_count": 15360,
+      "dir_count": 449,
+      "errors_count": 0
+    }
+  ]
+}
