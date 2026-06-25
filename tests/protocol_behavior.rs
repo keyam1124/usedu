@@ -48,6 +48,7 @@ fn json_v2_envelope_reflects_report_options_and_separate_counts() {
             cross_file_systems: false,
             jobs: Some(1),
             max_output_entries: None,
+            redact_paths: false,
         },
     );
 
@@ -169,6 +170,7 @@ fn default_report_options() -> EnvelopeOptions {
         cross_file_systems: false,
         jobs: None,
         max_output_entries: None,
+        redact_paths: false,
     }
 }
 
@@ -212,6 +214,7 @@ fn snapshot_fixture(root: &str, entries: &[(&str, u64)]) -> ScanEnvelope {
             cross_file_systems: false,
             jobs: None,
             max_output_entries: None,
+            redact_paths: false,
         },
     )
 }

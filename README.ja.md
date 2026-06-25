@@ -30,6 +30,7 @@ usedu report ~/Library --format ndjson
 usedu schema json-v2
 usedu snapshot ~/Library > scan.usedu.json
 usedu compare before.usedu.json after.usedu.json
+usedu mcp --stdio --allow-root ~/Library
 ```
 
 パスを渡さない場合、`usedu` は現在のディレクトリを TUI で開きます。
@@ -93,6 +94,7 @@ usedu report [PATH]
     --format text|json-v1|json-v2|ndjson
                             Output format. Default: text
     --errors                Show error details
+    --redact-paths          Redact display paths in machine-readable output
     --no-progress           Disable progress indicator
     --cross-file-systems    Allow scanning across mounted filesystems
     --jobs <N>              Worker count for parallel scans
@@ -121,6 +123,12 @@ usedu snapshot [PATH] > scan.usedu.json
 
 ```bash
 usedu compare before.usedu.json after.usedu.json
+```
+
+MCP adapter は次の command で起動します。
+
+```bash
+usedu mcp --stdio --allow-root [PATH]
 ```
 
 ## サイズの扱い
@@ -159,7 +167,7 @@ machine-readable JSON v2 では、regular file、directory、symlink、other の
 ## 開発
 
 維持すべき設計上の制約は [docs/design.ja.md](docs/design.ja.md) にまとめています。
-プロダクト契約は [docs/adr/0001-product-contract.ja.md](docs/adr/0001-product-contract.ja.md)、ファイルシステム用語は [docs/semantics.ja.md](docs/semantics.ja.md)、JSON 契約修正計画は [docs/json-contract.ja.md](docs/json-contract.ja.md) に記録しています。
+プロダクト契約は [docs/adr/0001-product-contract.ja.md](docs/adr/0001-product-contract.ja.md)、ファイルシステム用語は [docs/semantics.ja.md](docs/semantics.ja.md)、JSON 契約は [docs/json-contract.ja.md](docs/json-contract.ja.md)、agent boundary は [docs/agent-security.ja.md](docs/agent-security.ja.md)、MCP tool contract は [docs/mcp-tools.ja.md](docs/mcp-tools.ja.md) に記録しています。
 
 ```bash
 cargo build

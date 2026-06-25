@@ -86,6 +86,7 @@ pub struct EffectiveOptionsDto {
     pub cross_file_systems: bool,
     pub jobs: Option<usize>,
     pub max_output_entries: Option<usize>,
+    pub redact_paths: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +178,7 @@ pub struct EnvelopeOptions {
     pub cross_file_systems: bool,
     pub jobs: Option<usize>,
     pub max_output_entries: Option<usize>,
+    pub redact_paths: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,7 +231,7 @@ pub struct DiffEntrySideDto {
 
 pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> ScanEnvelope {
     let scan_id = scan_id(scan);
-    let root = dir_entry(&scan.root, None);
+    let root = dir_entry(&scan.root, None, options);
     let mut entries = Vec::new();
     let mut next_cursor = None;
 
@@ -257,7 +259,11 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
     }
 
     let issues = if options.show_errors {
-        scan.root.errors.iter().map(issue_dto).collect()
+        scan.root
+            .errors
+            .iter()
+            .map(|issue| issue_dto(issue, options))
+            .collect()
     } else {
         Vec::new()
     };
@@ -292,7 +298,7 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
             scan.top_files
                 .iter()
                 .take(options.top)
-                .map(top_file_dto)
+                .map(|file| top_file_dto(file, options))
                 .collect()
         } else {
             Vec::new()
@@ -475,7 +481,7 @@ fn collect_entries(
     }
 
     for child in children {
-        let entry = entry_dto(child, Some(parent_id.to_string()));
+        let entry = entry_dto(child, Some(parent_id.to_string()), options);
         let child_id = entry.entry_id.clone();
         out.push(entry);
         if let Some(child_dir) = child.as_dir() {
@@ -514,22 +520,36 @@ fn selected_children<'a>(
     entries
 }
 
-fn entry_dto(entry: &EntrySummary, parent_entry_id: Option<String>) -> EntryDto {
+fn entry_dto(
+    entry: &EntrySummary,
+    parent_entry_id: Option<String>,
+    options: &EnvelopeOptions,
+) -> EntryDto {
     match entry {
-        EntrySummary::Dir(dir) => dir_entry(dir, parent_entry_id),
-        EntrySummary::File(file) => leaf_entry(file, EntryKindDto::RegularFile, parent_entry_id),
-        EntrySummary::Symlink(file) => leaf_entry(file, EntryKindDto::Symlink, parent_entry_id),
-        EntrySummary::Other(file) => leaf_entry(file, EntryKindDto::Other, parent_entry_id),
+        EntrySummary::Dir(dir) => dir_entry(dir, parent_entry_id, options),
+        EntrySummary::File(file) => {
+            leaf_entry(file, EntryKindDto::RegularFile, parent_entry_id, options)
+        }
+        EntrySummary::Symlink(file) => {
+            leaf_entry(file, EntryKindDto::Symlink, parent_entry_id, options)
+        }
+        EntrySummary::Other(file) => {
+            leaf_entry(file, EntryKindDto::Other, parent_entry_id, options)
+        }
     }
 }
 
-fn dir_entry(dir: &DirSummary, parent_entry_id: Option<String>) -> EntryDto {
+fn dir_entry(
+    dir: &DirSummary,
+    parent_entry_id: Option<String>,
+    options: &EnvelopeOptions,
+) -> EntryDto {
     EntryDto {
         entry_id: entry_id(&dir.path),
         parent_entry_id,
         kind: EntryKindDto::Directory,
-        display_name: dir.name.to_string_lossy().into_owned(),
-        display_path: display_path(&dir.path),
+        display_name: display_name(dir.name.to_string_lossy().as_ref(), options),
+        display_path: display_path_field(&dir.path, options),
         path_ref: path_ref(&dir.path),
         used_bytes: dir.used_bytes,
         own_bytes: dir.own_bytes,
@@ -546,13 +566,18 @@ fn dir_entry(dir: &DirSummary, parent_entry_id: Option<String>) -> EntryDto {
     }
 }
 
-fn leaf_entry(file: &FileSummary, kind: EntryKindDto, parent_entry_id: Option<String>) -> EntryDto {
+fn leaf_entry(
+    file: &FileSummary,
+    kind: EntryKindDto,
+    parent_entry_id: Option<String>,
+    options: &EnvelopeOptions,
+) -> EntryDto {
     EntryDto {
         entry_id: entry_id(&file.path),
         parent_entry_id,
         kind: kind.clone(),
-        display_name: file.name.to_string_lossy().into_owned(),
-        display_path: display_path(&file.path),
+        display_name: display_name(file.name.to_string_lossy().as_ref(), options),
+        display_path: display_path_field(&file.path, options),
         path_ref: path_ref(&file.path),
         used_bytes: file.used_bytes,
         own_bytes: file.used_bytes,
@@ -570,17 +595,17 @@ fn leaf_entry(file: &FileSummary, kind: EntryKindDto, parent_entry_id: Option<St
     }
 }
 
-fn top_file_dto(file: &FileSummary) -> TopFileDto {
+fn top_file_dto(file: &FileSummary, options: &EnvelopeOptions) -> TopFileDto {
     TopFileDto {
         entry_id: entry_id(&file.path),
-        display_name: file.name.to_string_lossy().into_owned(),
-        display_path: display_path(&file.path),
+        display_name: display_name(file.name.to_string_lossy().as_ref(), options),
+        display_path: display_path_field(&file.path, options),
         path_ref: path_ref(&file.path),
         used_bytes: file.used_bytes,
     }
 }
 
-fn issue_dto(error: &ScanErrorRecord) -> IssueDto {
+fn issue_dto(error: &ScanErrorRecord, options: &EnvelopeOptions) -> IssueDto {
     IssueDto {
         code: issue_code(error).to_string(),
         severity: if is_skip_issue(error) {
@@ -589,7 +614,7 @@ fn issue_dto(error: &ScanErrorRecord) -> IssueDto {
             "error".to_string()
         },
         entry_id: Some(entry_id(&error.path)),
-        display_path: display_path(&error.path),
+        display_path: display_path_field(&error.path, options),
         path_ref: path_ref(&error.path),
         raw_os_error: raw_os_error(error),
         message: error.message.clone(),
@@ -677,6 +702,23 @@ fn effective_options(options: &EnvelopeOptions) -> EffectiveOptionsDto {
         cross_file_systems: options.cross_file_systems,
         jobs: options.jobs,
         max_output_entries: options.max_output_entries,
+        redact_paths: options.redact_paths,
+    }
+}
+
+fn display_name(name: &str, options: &EnvelopeOptions) -> String {
+    if options.redact_paths {
+        "[redacted]".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn display_path_field(path: &Path, options: &EnvelopeOptions) -> String {
+    if options.redact_paths {
+        "[redacted]".to_string()
+    } else {
+        display_path(path)
     }
 }
 

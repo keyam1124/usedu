@@ -10,6 +10,8 @@
 - [ADR 0001: プロダクト契約](adr/0001-product-contract.ja.md)
 - [ファイルシステム意味論](semantics.ja.md)
 - [JSON 契約修正計画](json-contract.ja.md)
+- [agent security boundary](agent-security.ja.md)
+- [MCP tool contract](mcp-tools.ja.md)
 
 ## プロダクト境界
 

@@ -10,6 +10,8 @@ Related documents:
 - [ADR 0001: Product Contract](adr/0001-product-contract.md)
 - [Filesystem Semantics](semantics.md)
 - [JSON Contract Repair Plan](json-contract.md)
+- [Agent Security Boundary](agent-security.md)
+- [MCP Tool Contract](mcp-tools.md)
 
 ## Product Boundary
 

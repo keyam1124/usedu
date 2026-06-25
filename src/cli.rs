@@ -5,8 +5,8 @@ use crate::protocol::{
     ScanEnvelope,
 };
 use crate::scanner::{scan_recursive, ScanOptions, ScanProgress, SortKey};
-use crate::tui;
 use crate::util::path::display_path;
+use crate::{mcp, tui};
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -57,6 +57,8 @@ pub enum Command {
     Snapshot(SnapshotArgs),
     #[command(about = "Compare two usedu snapshot JSON files")]
     Compare(CompareArgs),
+    #[command(about = "Run a foreground MCP stdio server")]
+    Mcp(McpArgs),
 }
 
 #[derive(Debug, Args)]
@@ -112,6 +114,12 @@ pub struct ReportArgs {
     #[arg(long = "errors", help = "Show error details")]
     pub errors: bool,
 
+    #[arg(
+        long = "redact-paths",
+        help = "Redact displayName and displayPath in machine-readable output"
+    )]
+    pub redact_paths: bool,
+
     #[arg(long = "no-progress", help = "Disable progress indicator")]
     pub no_progress: bool,
 
@@ -156,6 +164,12 @@ pub struct SnapshotArgs {
         help = "Worker count for parallel scans; defaults to an I/O-optimized value"
     )]
     pub jobs: Option<usize>,
+
+    #[arg(
+        long = "redact-paths",
+        help = "Redact displayName and displayPath in the snapshot"
+    )]
+    pub redact_paths: bool,
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +179,26 @@ pub struct CompareArgs {
 
     #[arg(value_name = "AFTER")]
     pub after: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    #[arg(long = "stdio", help = "Run MCP over stdin/stdout")]
+    pub stdio: bool,
+
+    #[arg(
+        long = "allow-root",
+        value_name = "PATH",
+        help = "Allow MCP scans under this root; defaults to the current directory"
+    )]
+    pub allow_roots: Vec<PathBuf>,
+
+    #[arg(
+        long = "max-sessions",
+        default_value_t = 8,
+        help = "Maximum stored MCP scan sessions"
+    )]
+    pub max_sessions: usize,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -211,6 +245,7 @@ pub fn run(cli: Cli) -> Result<()> {
             run_snapshot(merge_snapshot_args(args, cross_file_systems, fast, jobs))
         }
         Some(Command::Compare(args)) => run_compare(args),
+        Some(Command::Mcp(args)) => run_mcp(args),
         None => run_tui(cli.path, cross_file_systems, fast, jobs),
     }
 }
@@ -310,6 +345,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         cross_file_systems: args.cross_file_systems,
         jobs: args.jobs,
         max_output_entries: None,
+        redact_paths: args.redact_paths,
     };
     println!("{}", render_json_v2(&scan, &options)?);
     Ok(())
@@ -323,6 +359,17 @@ fn run_compare(args: CompareArgs) -> Result<()> {
         serde_json::to_string_pretty(&diff_snapshots(&before, &after))?
     );
     Ok(())
+}
+
+fn run_mcp(args: McpArgs) -> Result<()> {
+    if !args.stdio {
+        bail!("MCP currently supports only --stdio");
+    }
+    mcp::run_stdio(mcp::McpServerConfig {
+        allowed_roots: args.allow_roots,
+        max_sessions: args.max_sessions,
+        ..Default::default()
+    })
 }
 
 fn merge_report_args(
@@ -371,6 +418,7 @@ fn envelope_options_for_report(args: &ReportArgs, mode: EnvelopeMode) -> Envelop
         cross_file_systems: args.cross_file_systems,
         jobs: args.jobs,
         max_output_entries: None,
+        redact_paths: args.redact_paths,
     }
 }
 
@@ -490,6 +538,17 @@ mod tests {
         };
         assert_eq!(args.path, PathBuf::from("/tmp"));
         assert!(args.cross_file_systems);
+    }
+
+    #[test]
+    fn mcp_subcommand_requires_stdio_arguments() {
+        let cli = Cli::parse_from(["usedu", "mcp", "--stdio", "--allow-root", "/tmp"]);
+
+        let Some(Command::Mcp(args)) = cli.command else {
+            panic!("expected mcp subcommand");
+        };
+        assert!(args.stdio);
+        assert_eq!(args.allow_roots, vec![PathBuf::from("/tmp")]);
     }
 
     #[test]

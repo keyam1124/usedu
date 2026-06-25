@@ -30,6 +30,7 @@ usedu report ~/Library --format ndjson
 usedu schema json-v2
 usedu snapshot ~/Library > scan.usedu.json
 usedu compare before.usedu.json after.usedu.json
+usedu mcp --stdio --allow-root ~/Library
 ```
 
 If no path is provided, `usedu` opens the current directory in the TUI.
@@ -93,6 +94,7 @@ Useful options:
     --format text|json-v1|json-v2|ndjson
                             Output format. Default: text
     --errors                Show error details
+    --redact-paths          Redact display paths in machine-readable output
     --no-progress           Disable progress indicator
     --cross-file-systems    Allow scanning across mounted filesystems
     --jobs <N>              Worker count for parallel scans
@@ -121,6 +123,12 @@ Compare two snapshots with:
 
 ```bash
 usedu compare before.usedu.json after.usedu.json
+```
+
+Run the MCP adapter with:
+
+```bash
+usedu mcp --stdio --allow-root [PATH]
 ```
 
 ## Size Semantics
@@ -159,7 +167,7 @@ For protected macOS locations, grant Full Disk Access to the terminal app if exp
 ## Development
 
 Design constraints that should remain stable are documented in [docs/design.md](docs/design.md).
-The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr/0001-product-contract.md), filesystem terms are defined in [docs/semantics.md](docs/semantics.md), and the JSON contract repair plan is in [docs/json-contract.md](docs/json-contract.md).
+The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr/0001-product-contract.md), filesystem terms are defined in [docs/semantics.md](docs/semantics.md), the JSON contract is in [docs/json-contract.md](docs/json-contract.md), the agent boundary is in [docs/agent-security.md](docs/agent-security.md), and the MCP tool contract is in [docs/mcp-tools.md](docs/mcp-tools.md).
 
 ```bash
 cargo build
