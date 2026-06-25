@@ -2,14 +2,14 @@ use crate::output::bars::usage_bar;
 use crate::output::format::sorted_entries;
 use crate::output::ReportOptions;
 use crate::scanner::{DirSummary, EntrySummary, SortKey};
-use crate::util::path::display_path;
+use crate::util::path::{display_os_str_human, display_path_human};
 use crate::util::units::{format_bytes, format_percent};
 
 pub fn render_tree(root: &DirSummary, options: &ReportOptions) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{} {}\n",
-        display_path(&root.path),
+        display_path_human(&root.path),
         format_bytes(root.used_bytes)
     ));
 
@@ -54,7 +54,7 @@ fn render_children(
             "{}{} {} {}  {}  {}\n",
             prefix,
             connector,
-            entry.name().to_string_lossy(),
+            display_os_str_human(entry.name()),
             format_bytes(entry.used_bytes()),
             format_percent(entry.used_bytes(), total),
             usage_bar(entry.used_bytes(), total, 16).trim_end()

@@ -1,6 +1,6 @@
 use super::app::App;
 use crate::output::bars::usage_bar;
-use crate::util::path::display_path;
+use crate::util::path::{display_os_str_human, display_path_human};
 use crate::util::timing::format_duration;
 use crate::util::units::{format_bytes, format_compact_count, format_percent};
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -71,7 +71,7 @@ fn draw_loading(frame: &mut Frame<'_>, app: &App) {
     };
     let message = Paragraph::new(format!(
         "Scanning: {}\n{}\n\n{}",
-        display_path(&app.current_path),
+        display_path_human(&app.current_path),
         progress_text,
         action
     ))
@@ -106,7 +106,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     };
     let title = format!(
         "Path: {}\nUsed: {} | Children: {} | Files: {} | Dirs: {} | Errors: {} | Elapsed: {} | Sort: {}",
-        display_path(&scan.root.path),
+        display_path_human(&scan.root.path),
         format_bytes(scan.root.used_bytes),
         scan.rows.len(),
         format_compact_count(scan.root.file_count),
@@ -127,7 +127,7 @@ fn draw_table(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
         Row::new(vec![
             Cell::from((idx + 1).to_string()),
             Cell::from(entry.kind_label()),
-            Cell::from(entry.name().to_string_lossy().into_owned()),
+            Cell::from(display_os_str_human(entry.name())),
             Cell::from(format_bytes(entry.used_bytes())),
             Cell::from(format_percent(entry.used_bytes(), scan.root.used_bytes)),
             Cell::from(format!(
@@ -188,7 +188,7 @@ fn draw_errors(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
             .map(|error| {
                 ListItem::new(format!(
                     "{}: {} ({})",
-                    display_path(&error.path),
+                    display_path_human(&error.path),
                     error.message,
                     error.kind
                 ))
@@ -204,7 +204,7 @@ fn draw_errors(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
 fn draw_footer(frame: &mut Frame<'_>, area: ratatui::layout::Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Enter: open  Backspace: parent  r/R: rescan  s: sort  e: errors  ?: help  q: quit",
+            "Enter: open  Backspace: parent  PgUp/PgDn: page  r/R: rescan  s: sort  e: errors  ?: help  q: quit",
         ),
         area,
     );

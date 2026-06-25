@@ -12,26 +12,17 @@ use crossterm::terminal::{
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::Terminal;
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+const MAX_CACHE_ENTRIES: usize = 128;
+
 pub fn run(path: PathBuf, options: ScanOptions) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_loop(&mut terminal, path, options);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
+    let mut session = TerminalSession::enter()?;
+    run_loop(session.terminal_mut(), path, options)
 }
 
 fn run_loop<B: Backend>(
@@ -73,6 +64,8 @@ fn run_loop<B: Backend>(
             }
             KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
+            KeyCode::PageDown => app.move_selection(10),
+            KeyCode::PageUp => app.move_selection(-10),
             KeyCode::Enter => {
                 if let Some(entry) = app.selected_entry() {
                     if entry.is_dir() {
@@ -139,7 +132,7 @@ fn load_current<B: Backend>(
         match receiver.try_recv() {
             Ok(Ok(scan)) => {
                 app.current_path = scan.root.path.clone();
-                app.cache.insert(app.current_path.clone(), scan.clone());
+                app.insert_cache(app.current_path.clone(), scan.clone());
                 app.current_scan = Some(scan);
                 app.loading = false;
                 app.cancelling = false;
@@ -266,14 +259,56 @@ impl App {
         let current = self.current_path.clone();
         self.cache.retain(|path, _| !path.starts_with(&current));
     }
+
+    fn insert_cache(&mut self, path: PathBuf, scan: CurrentLevelScan) {
+        if self.cache.len() >= MAX_CACHE_ENTRIES && !self.cache.contains_key(&path) {
+            self.cache.clear();
+        }
+        self.cache.insert(path, scan);
+    }
 }
 
 fn entry_name(entry: &EntrySummary) -> String {
-    entry.name().to_string_lossy().into_owned()
+    crate::util::path::display_os_str_human(entry.name())
 }
 
 fn is_cancelled_error(error: &Error) -> bool {
     error
         .downcast_ref::<ScannerError>()
         .is_some_and(|error| matches!(error, ScannerError::Cancelled))
+}
+
+struct TerminalSession {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+}
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        let backend = CrosstermBackend::new(stdout);
+        match Terminal::new(backend) {
+            Ok(terminal) => Ok(Self { terminal }),
+            Err(error) => {
+                let _ = disable_raw_mode();
+                Err(error.into())
+            }
+        }
+    }
+
+    fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<Stdout>> {
+        &mut self.terminal
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = self.terminal.show_cursor();
+    }
 }

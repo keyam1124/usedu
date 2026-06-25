@@ -1,4 +1,5 @@
 use crate::scanner::{EntrySummary, SortKey};
+use crate::util::path::display_os_str_human;
 
 pub fn sorted_entries(
     entries: &[EntrySummary],
@@ -32,5 +33,5 @@ pub fn sorted_entries(
 }
 
 pub fn entry_name(entry: &EntrySummary) -> String {
-    entry.name().to_string_lossy().into_owned()
+    display_os_str_human(entry.name())
 }

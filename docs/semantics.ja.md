@@ -57,8 +57,9 @@ machine-readable output は、有効になっている filesystem-boundary polic
 
 ## hard link
 
-strict accounting では、同じ device と inode を持つ regular file を重複計上しないようにします。
-現在の scanner は scan 内の first-seen ownership を使うため、将来の実装では deterministic owner を定義するか、unique bytes と shared bytes を分けます。
+strict accounting では、同じ device と inode を持つ regular file を重複計上しません。
+strict traversal は directory entry を bytewise path order で処理し、その deterministic traversal で最初に見つかった path に hard-link ownership を割り当てます。
+将来の snapshot format では、hard-link group をより明示するために unique bytes と shared bytes を分けられます。
 
 fast mode では、hard-linked file を重複計上することがあります。
 machine-readable output は、この違いを単なる性能 option ではなく accounting semantics として公開します。

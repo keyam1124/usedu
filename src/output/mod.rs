@@ -5,7 +5,7 @@ pub mod table;
 pub mod tree;
 
 use crate::scanner::{ScanResult, SortKey};
-use crate::util::path::display_path;
+use crate::util::path::display_path_human;
 use crate::util::timing::format_duration;
 use crate::util::units::{format_bytes, format_count};
 
@@ -22,7 +22,10 @@ pub struct ReportOptions {
 
 pub fn render_report(scan: &ScanResult, options: &ReportOptions) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Target:      {}\n", display_path(&scan.root.path)));
+    out.push_str(&format!(
+        "Target:      {}\n",
+        display_path_human(&scan.root.path)
+    ));
     out.push_str(&format!(
         "Used:        {}\n",
         format_bytes(scan.root.used_bytes)
@@ -73,7 +76,7 @@ pub fn render_report(scan: &ScanResult, options: &ReportOptions) -> String {
             for error in &scan.root.errors {
                 out.push_str(&format!(
                     "- {}: {} ({})\n",
-                    display_path(&error.path),
+                    display_path_human(&error.path),
                     error.message,
                     error.kind
                 ));

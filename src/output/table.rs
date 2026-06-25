@@ -2,7 +2,7 @@ use crate::output::bars::usage_bar;
 use crate::output::format::{entry_name, sorted_entries};
 use crate::output::ReportOptions;
 use crate::scanner::{DirSummary, FileSummary};
-use crate::util::path::display_path;
+use crate::util::path::display_path_human;
 use crate::util::units::{format_bytes, format_compact_count, format_percent};
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, ContentArrangement, Table};
@@ -51,7 +51,7 @@ pub fn render_top_files(files: &[FileSummary], root_used: u64, top: usize) -> St
     for (idx, file) in files.iter().take(top).enumerate() {
         table.add_row(vec![
             Cell::new((idx + 1).to_string()),
-            Cell::new(display_path(&file.path)),
+            Cell::new(display_path_human(&file.path)),
             Cell::new(format_bytes(file.used_bytes)),
             Cell::new(format_percent(file.used_bytes, root_used)),
             Cell::new(usage_bar(file.used_bytes, root_used, 20)),

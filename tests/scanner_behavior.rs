@@ -83,6 +83,35 @@ fn hard_links_are_counted_once() {
 }
 
 #[test]
+fn hard_links_across_sibling_directories_have_stable_owner() {
+    let fixture = Fixture::new("hard-links-siblings");
+    fs::create_dir(fixture.path("a")).unwrap();
+    fs::create_dir(fixture.path("b")).unwrap();
+    write_file(&fixture.path("a/original.bin"), &[1; 1024 * 1024]);
+    fs::hard_link(fixture.path("a/original.bin"), fixture.path("b/alias.bin")).unwrap();
+    let allocated = allocated_bytes(&fs::symlink_metadata(fixture.path("a/original.bin")).unwrap());
+
+    for _ in 0..8 {
+        let scan = scan_recursive(fixture.root(), &ScanOptions::default()).unwrap();
+        let a = scan
+            .root
+            .children
+            .iter()
+            .find_map(|entry| entry.as_dir().filter(|dir| dir.name == "a"))
+            .unwrap();
+        let b = scan
+            .root
+            .children
+            .iter()
+            .find_map(|entry| entry.as_dir().filter(|dir| dir.name == "b"))
+            .unwrap();
+
+        assert!(a.used_bytes >= allocated);
+        assert!(b.used_bytes < allocated);
+    }
+}
+
+#[test]
 fn current_level_contains_only_direct_children_with_recursive_directory_sizes() {
     let fixture = Fixture::new("current-level");
     fs::create_dir(fixture.path("child")).unwrap();

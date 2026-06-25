@@ -55,8 +55,9 @@ Skips caused by this policy are not permission errors.
 
 ## Hard Links
 
-Strict accounting should avoid double-counting a regular file with the same device and inode.
-The current scanner uses first-seen ownership within a scan, so future work must define a deterministic owner or split unique and shared bytes.
+Strict accounting avoids double-counting a regular file with the same device and inode.
+Strict traversal processes directory entries in bytewise path order and assigns hard-link ownership to the first path seen by that deterministic traversal.
+Future snapshot formats can still split unique and shared bytes to make hard-link groups more explicit.
 
 Fast mode may over-count hard-linked files.
 Machine-readable output must expose this difference as accounting semantics, not only as a performance option.

@@ -344,6 +344,9 @@ impl ScanState {
     }
 
     fn should_parallelize_dirs(&self, current_depth: usize, dir_count: usize) -> bool {
+        if !self.options.fast {
+            return false;
+        }
         if self.worker_count() <= 1 || dir_count <= 1 {
             return false;
         }
@@ -460,19 +463,21 @@ fn read_children_into(
         }
     };
 
-    let mut dir_children = Vec::new();
-
-    for entry_result in entries {
-        state.check_cancelled()?;
-        let entry = match entry_result {
-            Ok(entry) => entry,
+    let mut entries = entries
+        .filter_map(|entry_result| match entry_result {
+            Ok(entry) => Some(entry),
             Err(error) => {
                 let record = state.record_io_error(summary.path.clone(), &error);
                 summary.errors.push(record);
-                continue;
+                None
             }
-        };
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| path_sort_key(&entry.path()));
+    let mut dir_children = Vec::new();
 
+    for entry in entries {
+        state.check_cancelled()?;
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -1169,4 +1174,16 @@ fn display_name(path: &Path) -> OsString {
     path.file_name()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| path.as_os_str().to_owned())
+}
+
+fn path_sort_key(path: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().as_bytes().to_vec()
+    }
 }
