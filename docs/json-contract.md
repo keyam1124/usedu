@@ -1,37 +1,41 @@
-# JSON Contract Repair Plan
+# JSON Machine Interface
 
 [English](json-contract.md) | [日本語](json-contract.ja.md)
 
-This document records the B01 compatibility contract and migration plan.
+This document describes the currently implemented machine-readable formats used by the CLI, snapshots, and MCP adapter.
 
-## Current Contract Problem
+## Available formats
 
-`usedu report --json` serializes a human report-shaped structure.
-Several report options are already accepted by the CLI but are not represented consistently in JSON output.
-For an agent-facing interface, silently ignored options are unsafe.
+| Command | Purpose |
+| --- | --- |
+| `usedu report PATH --json` | Legacy JSON report format. Kept for compatibility. |
+| `usedu report PATH --format json-v1` | Explicit form of the legacy JSON report. |
+| `usedu report PATH --format json-v2` | Versioned scan envelope for machine clients. |
+| `usedu report PATH --format ndjson` | Line-delimited events derived from the JSON v2 envelope. |
+| `usedu snapshot PATH` | Full-depth JSON v2 snapshot written to stdout. |
+| `usedu compare BEFORE AFTER` | Versioned diff of two snapshot files. |
+| `usedu schema json-v2` | Prints the JSON v2 schema. |
 
-The current JSON output also uses display paths as identity-like fields.
-That is acceptable only as display data because lossy UTF-8 conversion can change non-UTF-8 paths.
+Machine-readable output never mixes progress output into stdout.
 
-## Compatibility Strategy
+## Compatibility policy
 
-Keep the current `--json` output as the current JSON format.
-Use explicit machine formats instead of changing the existing format in place:
+The legacy `--json` format is not silently replaced by JSON v2 because its shape is already externally observable.
 
-```bash
-usedu report PATH --format json-v2
-usedu report PATH --format ndjson
-usedu schema json-v2
-usedu snapshot PATH > scan.usedu.json
-usedu compare before.usedu.json after.usedu.json
+New integrations should use JSON v2, NDJSON, snapshots, or MCP `structuredContent`.
+
+The current schema identifiers are:
+
+```text
+usedu.scan.v2
+usedu.diff.v1
 ```
 
-The current `--json` flag is a documented alias for the current JSON format.
-It must not mix progress or diagnostics into stdout.
+A consumer should validate `schemaVersion` before relying on field semantics.
 
-## JSON v2 Envelope
+## Scan envelope
 
-JSON v2 should use a versioned envelope:
+JSON v2 uses this top-level structure:
 
 ```text
 schemaVersion
@@ -41,51 +45,193 @@ semantics
 effectiveOptions
 root
 entries
+topFiles
 issueSummary
 issues
 nextCursor
 ```
 
-`semantics` must include:
+### `status`
+
+`status.state` is one of:
+
+- `complete`
+- `partial`
+- `cancelled`
+- `limitReached`
+
+The current scanner normally represents permission errors and traversal-budget limits as a successfully produced `partial` envelope. Output truncation produces `limitReached`.
+
+`partialReasons` contains machine-readable reason strings such as `issuesRecorded`, `resourceLimitReached`, `maxOutputEntries`, and `maxOutputBytes`.
+
+### `semantics`
+
+The envelope records how its sizes were calculated:
 
 - `sizeMetric: allocated`
 - accounting source
-- accounting accuracy
+- strict or approximate accuracy
 - hard-link policy
 - filesystem-boundary policy
 - symlink policy
-- whether directory own bytes are included
+- whether directory-own bytes are included
 - `reclaimableBytesKnown: false`
 
-`effectiveOptions` must include the resolved values for depth, top limit, file inclusion, directory-only filtering, sort, fast mode, cross-filesystem policy, `maxOutputEntries`, and `maxOutputBytes`.
+Clients must not interpret `usedBytes` as guaranteed reclaimable space.
 
-## Option Handling
+### `effectiveOptions`
 
-JSON v2 must not silently ignore report options.
+The envelope records resolved values for:
 
-- `--top` limits ranking-style result sets and top-file result sets.
-- `--sort` controls deterministic ordering where sorting is requested.
-- `--sort name` is supported in JSON v2 in addition to `used`, `files`, and `dirs`.
-- `--dirs-only` filters ranked entries to directories.
-- `--files` includes top-file entries in the structured result.
-- `--depth` controls retained tree depth only where a tree view is requested; flat entry lists should use pagination or explicit limits.
-- `--errors` includes issue details; issue counts are always available.
-- `--max-output-bytes` caps JSON v2/NDJSON output by truncating structured sections and setting `limitReached`.
-- unsupported option combinations return a structured CLI error before scanning.
+- mode: `report` or `snapshot`
+- depth
+- top limit
+- file inclusion
+- summary mode
+- directory-only filtering
+- sort
+- issue-detail inclusion
+- fast mode
+- cross-filesystem policy
+- worker count
+- output entry and byte limits
+- display-path redaction
 
-## Identity And Paths
+This allows consumers to determine how much of the tree was retained and whether two results are comparable.
 
-`displayPath` and `displayName` are display-only.
-JSON v2 should use `entryId` as the scan-local reference and `pathRef` for reversible path identity in snapshots.
-Lossy strings must never be the only identity.
+## Entries and paths
 
-## Tests
+`root` is one `EntryDto`. `entries` is a flat array whose `parentEntryId` fields reconstruct the retained tree.
 
-B01 should add golden tests for:
+Each entry contains:
 
-- current JSON compatibility;
-- JSON v2 envelope fields;
-- option reflection in `effectiveOptions`;
-- `--top`, `--sort`, `--dirs-only`, `--files`, and `--depth`;
-- structured issues;
-- non-UTF-8 and control-character path display safety.
+```text
+entryId
+parentEntryId
+kind
+displayName
+displayPath
+pathRef
+usedBytes
+ownBytes
+uniqueBytes
+sharedBytes
+counts
+complete
+issueCountBelow
+skippedCountBelow
+```
+
+`kind` is one of `directory`, `regularFile`, `symlink`, or `other`.
+
+`counts` separates:
+
+- regular files
+- directories
+- symbolic links
+- other entries
+
+Directory counts include the directory itself.
+
+`displayName` and `displayPath` are display-only and may contain lossy Unicode conversion. `pathRef` preserves Unix path bytes as hexadecimal and is the reversible identity used by snapshots and diffs.
+
+`entryId` is a convenient reference within a scan, not a durable globally unique identifier.
+
+`uniqueBytes` and `sharedBytes` are present in the schema but are currently `null`; the scanner does not yet split hard-link allocation into these fields.
+
+## Report mode versus snapshot mode
+
+The same envelope type is used in two modes.
+
+### Report mode
+
+`usedu report --format json-v2` uses `effectiveOptions.mode: "report"`.
+
+- `depth` controls retained tree depth.
+- `top` truncates selected children per retained directory and limits `topFiles`.
+- `includeFiles` is enabled through the CLI `--files` option.
+- `dirsOnly` filters ranked tree entries to directories.
+- issue details are included only with `--errors`; aggregate issue counts remain available.
+
+### Snapshot mode
+
+`usedu snapshot` and MCP `usedu_scan` use `effectiveOptions.mode: "snapshot"`.
+
+- Snapshot CLI retains the full tree and all file entries unless an output-byte cap truncates the serialized envelope.
+- MCP chooses retained depth and filters from tool arguments.
+- In MCP snapshot mode, `top` limits `topFiles` but does not limit `entries`.
+
+This distinction is important when reusing MCP scan arguments: `top` is not a directory-ranking limit there.
+
+## Sorting and determinism
+
+Entry ordering uses the requested sort key with path-byte tie-breaking in the protocol layer.
+
+The MCP query tools have their own current behavior:
+
+- `usedu_list_children` orders by `usedBytes` descending;
+- `usedu_top_entries` orders by `usedBytes` descending.
+
+They do not preserve the original envelope sort for those query results.
+
+## Output limits
+
+`maxOutputEntries` truncates `entries` and sets `status.state` to `limitReached`.
+
+`maxOutputBytes` is a best-effort serialized-size target. The implementation removes entries first, then top files and issue details until the target is met or only mandatory fields remain. A very small target can still be exceeded by the mandatory envelope structure.
+
+Truncation changes the stored result. MCP query tools cannot recover data removed by these limits.
+
+`nextCursor` records that the envelope was truncated or that report-mode ranking has more entries, but the current MCP tools do not use it to retrieve omitted envelope data.
+
+## NDJSON
+
+NDJSON output is produced after the scan completes from the JSON v2 envelope. It is line-delimited but is not currently a live traversal stream.
+
+The event sequence is:
+
+```text
+scanStarted
+entry ...
+issue ...
+scanCompleted
+```
+
+Each line includes `schemaVersion` and `scanId`.
+
+## Diff envelope
+
+`usedu compare` and MCP `usedu_compare` return `usedu.diff.v1`:
+
+```text
+schemaVersion
+status
+beforeScanId
+afterScanId
+summary
+changes
+```
+
+Diff identity is `pathRef`. The comparison includes each root and retained `entries`; it does not compare `topFiles` or issue records.
+
+A diff is marked inexact when either input is not complete or their `semantics` differ. Inexact changes are classified as `uncertain`.
+
+Callers should also use compatible roots and `effectiveOptions`. The current diff implementation does not reject every option mismatch automatically.
+
+## Redaction
+
+CLI machine output uses `--redact-paths`; MCP uses `redactPaths: true`.
+
+Redaction replaces `displayName` and `displayPath` with `[redacted]`. It intentionally leaves `pathRef` intact so machine identity remains reversible. Do not forward `pathRef` when reversible path disclosure is not acceptable.
+
+## Schema and tests
+
+Print the authoritative JSON v2 schema with:
+
+```bash
+usedu schema json-v2
+```
+
+Protocol tests cover option reflection, separate entry counts, non-UTF-8 path identity, output limits, structured scan-budget issues, and snapshot diffs.
+
+For filesystem accounting terms, see [Filesystem Semantics](semantics.md). For MCP-specific workflows and limitations, see [Use `usedu` from an AI agent over MCP](mcp-tools.md).
