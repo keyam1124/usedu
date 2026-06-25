@@ -1,0 +1,11 @@
+Target:      /fixture
+Used:        32.0 KiB
+Files:       7
+Dirs:        2
+Errors:      2
+Elapsed:     1.20s
+Throughput:  8 entries/s
+
+
+Some entries could not be read. Re-run with --errors to view details.
+For protected macOS locations, grant Full Disk Access to the terminal app if needed.

@@ -133,6 +133,24 @@ fn current_level_contains_only_direct_children_with_recursive_directory_sizes() 
 }
 
 #[test]
+fn many_direct_children_scan_without_retaining_grandchildren() {
+    let fixture = Fixture::new("many-direct-children");
+    for index in 0..300 {
+        let dir = fixture.path(format!("child-{index:03}"));
+        fs::create_dir(&dir).unwrap();
+        write_file(&dir.join("file.txt"), b"file");
+    }
+
+    let scan = scan_current_level(fixture.root(), &ScanOptions::default()).unwrap();
+
+    assert_eq!(scan.rows.len(), 300);
+    assert!(scan
+        .rows
+        .iter()
+        .all(|entry| entry.as_dir().is_some_and(|dir| dir.children.is_empty())));
+}
+
+#[test]
 fn nested_file_nodes_are_not_retained_when_not_report_relevant() {
     let fixture = Fixture::new("retained-file-depth");
     fs::create_dir(fixture.path("child")).unwrap();
