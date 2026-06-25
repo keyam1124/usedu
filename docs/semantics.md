@@ -2,87 +2,166 @@
 
 [English](semantics.md) | [日本語](semantics.ja.md)
 
-This document defines the accounting terms that human reports and future machine-readable interfaces must share.
+This document defines the accounting terms shared by human reports, JSON v2, snapshots, diffs, and MCP tools.
 
-## Size Fields
+## What `Used` means
 
-`usedBytes` is the allocated file-system size attributed to an entry and its descendants.
-For a directory, it includes `ownBytes` plus retained descendant allocation according to the active accounting policy.
-For a leaf entry, it is the allocated size of that entry.
+`usedu` reports allocated filesystem bytes.
 
-`ownBytes` is the allocated size of the entry itself.
-For directories, this is the directory record's own allocation, not the total below it.
+It does not report:
 
-`uniqueBytes` is allocation owned uniquely by an entry under the selected hard-link policy.
-`sharedBytes` is allocation that is present through shared file identity, such as hard links.
-The current scanner does not yet expose these two fields separately; JSON v2 and snapshot formats should.
+- logical file length;
+- free-space change after deletion;
+- bytes that are certified safe to reclaim.
 
-All size fields describe allocated bytes, not logical byte length and not reclaimable bytes.
-The display label for human output remains `Used`.
+Human output labels allocated size as `Used`. Machine output records `sizeMetric: "allocated"` and `reclaimableBytesKnown: false`.
 
-## Count Fields
+## Size fields
 
-Future protocol fields should split leaf counts by kind:
+### `usedBytes`
 
-- `regularFileCount`
-- `directoryCount`
-- `symlinkCount`
-- `otherCount`
+`usedBytes` is the allocated size attributed to an entry.
 
-`directoryCount` includes the directory itself.
-For a root directory with one child directory, `directoryCount` is `2`.
+- For a directory, it is the directory's own allocation plus attributed descendant allocation under the active accounting policy.
+- For a leaf entry, it is the allocation attributed to that entry.
 
-The current scanner's `file_count` is broader than regular files.
-It counts regular files, symlinks, and other leaf entries together.
-JSON v2 should avoid carrying that ambiguity forward.
+A directory's `usedBytes` can be incomplete when traversal records issues or stops at a resource budget.
 
-## Entry Kinds
+### `ownBytes`
 
-`directory` is a directory scanned as a container.
-`regularFile` is a regular file.
-`symlink` is a symbolic link entry.
-`other` is a filesystem entry that is not one of the above.
+`ownBytes` is the allocation of the entry itself.
+
+For a directory, this means the directory record's own allocation, not the total below it. Strict mode includes directory-own bytes. Fast mode may report zero because it can omit this metadata.
+
+### `uniqueBytes` and `sharedBytes`
+
+JSON v2 includes nullable `uniqueBytes` and `sharedBytes` fields so the protocol can later represent shared allocation explicitly.
+
+The current scanner does not split allocation into those fields, so both are currently `null`. Hard-link behavior is described by `semantics.hardLinkPolicy` instead.
+
+## Count fields
+
+JSON v2 separates entry counts into:
+
+- `regularFiles`
+- `directories`
+- `symlinks`
+- `other`
+
+`directories` includes the directory itself. A root with one child directory therefore has `directories: 2`.
+
+Legacy internal and JSON v1 `fileCount` values are broader than regular files: they count regular files, symbolic links, and other leaf entries together. New integrations should use JSON v2 counts.
+
+## Entry kinds
+
+- `directory`: a directory scanned as a container;
+- `regularFile`: a regular file;
+- `symlink`: a symbolic link entry;
+- `other`: an entry that is none of the above.
 
 Symbolic links are counted as link entries and are not followed.
 
-## Filesystem Boundary
+## Filesystem boundary
 
-By default, scanning stays on the device of the requested root.
-Entries on other mounted filesystems are skipped unless the user explicitly enables cross-filesystem scanning.
+Strict mode stays on the device of the requested root by default. Entries on another mounted filesystem are recorded as policy skips unless cross-filesystem traversal is explicitly enabled.
 
-Machine-readable output should expose the effective filesystem-boundary policy.
-Skips caused by this policy are not permission errors.
+Machine output exposes the effective policy as:
 
-## Hard Links
+- `stayOnRootFilesystem`; or
+- `includeMountedFilesystems`.
 
-Strict accounting avoids double-counting a regular file with the same device and inode.
-Strict traversal processes directory entries in bytewise path order and assigns hard-link ownership to the first path seen by that deterministic traversal.
-Future snapshot formats can still split unique and shared bytes to make hard-link groups more explicit.
+A filesystem-boundary skip is a warning/skip, not a permission error.
 
-Fast mode may over-count hard-linked files.
-Machine-readable output must expose this difference as accounting semantics, not only as a performance option.
+Fast mode is approximate and may traverse mounted filesystems that strict mode would skip, even when the cross-filesystem option is false. The effective semantics therefore must be read together with `accuracy: "approximate"`.
 
-## Strict And Fast Modes
+## Hard links
+
+Strict mode avoids double-counting regular files with the same device and inode.
+
+Strict directory entries are processed in bytewise path order, and strict traversal is not parallelized. Allocation is assigned to the first path encountered for a device/inode identity. JSON v2 reports this policy as `firstSeenDeviceInode`.
+
+This keeps strict results repeatable, but it does not expose a separate shared-allocation total. `uniqueBytes` and `sharedBytes` remain null.
+
+Fast mode may count hard-linked files more than once and reports `hardLinkPolicy: "mayDoubleCount"`.
+
+## Strict mode
 
 Strict mode favors accounting consistency.
-It uses `symlink_metadata`, includes directory own allocation, avoids following symlinks, and keeps the requested filesystem boundary unless `--cross-file-systems` is set.
 
-Fast mode favors lower latency.
-It may omit directory own allocation in some paths, over-count hard links, and cross filesystem boundaries that strict mode would skip.
-Machine-readable output should report fast mode as approximate accounting.
+- metadata source: Unix `blocks() * 512`;
+- symbolic links are not followed;
+- directory-own allocation is included;
+- hard links are deduplicated where practical;
+- filesystem boundaries are enforced unless explicitly disabled;
+- directory traversal is deterministic.
 
-## Partial Results
+JSON v2 reports:
 
-A scan can be complete, partial, cancelled, or limit-reached.
-Permission errors and per-entry read failures are partial scan issues, not necessarily fatal command errors.
-Traversal budgets such as max entries or max duration also produce partial scan issues with `RESOURCE_LIMIT_REACHED`.
-Output caps such as max entries or max bytes for the serialized response produce `limitReached` without implying cleanup safety.
+```text
+accuracy: strict
+accountingSource: unixBlocks512
+directoryOwnBytesIncluded: true
+```
 
-`error` means the scan could not read or process an entry.
-`skip` means the scan intentionally did not include an entry because of policy, such as filesystem-boundary enforcement.
-Machine-readable output should distinguish them.
+## Fast mode
 
-## APFS Caveats
+Fast mode favors lower scan latency and can use macOS bulk metadata APIs.
 
-APFS clones, snapshots, compression, sparse files, and file-provider behavior can make allocated bytes differ from bytes reclaimable by deletion.
-`usedu` does not certify cleanup safety and does not promise that deleting a file or directory will recover its displayed `Used` value.
+It may:
+
+- omit directory-own allocation;
+- double-count hard links;
+- traverse mounted filesystems that strict mode would skip.
+
+JSON v2 reports:
+
+```text
+accuracy: approximate
+accountingSource: getattrlistbulkAllocSize
+directoryOwnBytesIncluded: false
+```
+
+Use strict mode when exact boundary behavior or repeatable accounting is more important than latency.
+
+## Complete, partial, and limited results
+
+A scan envelope has its own result status.
+
+### `complete`
+
+No filesystem issue or output truncation was recorded.
+
+### `partial`
+
+An envelope was produced, but it is incomplete because of issues such as:
+
+- permission denial;
+- an entry disappearing during traversal;
+- filesystem-boundary skipping;
+- `maxScanEntries` or `maxScanDurationMs` being reached.
+
+Traversal budgets produce a structured `RESOURCE_LIMIT_REACHED` issue.
+
+### `limitReached`
+
+The scan result was produced, but serialized sections were truncated by `maxOutputEntries` or `maxOutputBytes`.
+
+This is different from traversal stopping early. Output truncation removes retained entries or details after scanning; traversal budgets stop collection during scanning.
+
+MCP session state is separate from envelope status. A session can be `complete` because an envelope exists while that envelope is `partial` or `limitReached`.
+
+## Issues and skips
+
+An `error` means an entry could not be read or processed.
+
+A `skip` means policy intentionally excluded an entry, such as strict filesystem-boundary enforcement.
+
+JSON v2 exposes aggregate counts in `issueSummary` and optional details in `issues`. MCP clients can page through stored details with `usedu_get_issues`.
+
+## APFS and reclaimable-space caveats
+
+APFS clones, snapshots, compression, sparse files, and File Provider behavior can make allocated bytes differ from bytes recovered by deletion.
+
+`usedu` does not certify cleanup safety and does not promise that deleting an entry will recover its displayed `Used` value.
+
+For JSON field behavior, see [JSON Machine Interface](json-contract.md). For agent workflows, see [Use `usedu` from an AI agent over MCP](mcp-tools.md).
