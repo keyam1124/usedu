@@ -5,6 +5,12 @@
 This document records the product and implementation constraints that should remain stable as `usedu` evolves.
 It is not a historical implementation spec.
 
+Related documents:
+
+- [ADR 0001: Product Contract](adr/0001-product-contract.md)
+- [Filesystem Semantics](semantics.md)
+- [JSON Contract Repair Plan](json-contract.md)
+
 ## Product Boundary
 
 `usedu` is a read-only macOS disk usage analyzer for the terminal.

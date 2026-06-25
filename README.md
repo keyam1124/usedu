@@ -127,6 +127,7 @@ For protected macOS locations, grant Full Disk Access to the terminal app if exp
 ## Development
 
 Design constraints that should remain stable are documented in [docs/design.md](docs/design.md).
+The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr/0001-product-contract.md), filesystem terms are defined in [docs/semantics.md](docs/semantics.md), and the JSON contract repair plan is in [docs/json-contract.md](docs/json-contract.md).
 
 ```bash
 cargo build
