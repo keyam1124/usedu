@@ -3,7 +3,7 @@
 [English](mcp-tools.md) | [日本語](mcp-tools.ja.md)
 
 `usedu mcp --stdio` runs a foreground, read-only MCP server over standard input and standard output.
-It exposes completed scan results as in-memory sessions so an MCP client can inspect the result without rescanning the filesystem for every query.
+It stores scan results as in-memory sessions so an MCP client can inspect a completed result without rescanning the filesystem for every query.
 
 The current implementation:
 
@@ -12,9 +12,20 @@ The current implementation:
 - accepts one JSON-RPC message per line and writes one response per line;
 - reserves stdout for protocol messages and stderr for diagnostics;
 - keeps all sessions in memory, so they disappear when the process exits;
-- returns JSON v2 scan envelopes with schema version `usedu.scan.v2` and diff envelopes with schema version `usedu.diff.v1`.
+- returns scan envelopes with schema version `usedu.scan.v2` and diff envelopes with schema version `usedu.diff.v1`.
 
 `usedu` remains an inspection tool. The MCP server does not delete, move, quarantine, or recommend files for removal.
+
+## Mental model
+
+```text
+1. Configure allowed roots when the server starts
+2. Call usedu_scan and receive a scanId
+3. Use the scanId to query the stored result
+4. Close the session when it is no longer needed
+```
+
+`usedu_list_children`, `usedu_top_entries`, `usedu_get_issues`, and `usedu_compare` read stored scan envelopes. They do not rescan the filesystem.
 
 ## Start the server
 
@@ -33,7 +44,7 @@ usedu mcp --stdio \
 
 Allowed roots are fixed when the server starts. Tool arguments cannot widen the allowlist, and the current implementation does not import roots dynamically from the MCP client.
 
-Every allowed root and requested scan path is canonicalized. A requested path that resolves outside the allowlist, including through a symbolic link, is rejected before traversal.
+Every allowed root and requested scan path is canonicalized. A requested path that resolves outside the allowlist, including through a symbolic link, is rejected before traversal. A nonexistent path that cannot be canonicalized is also rejected.
 
 See [Agent Security Boundary](agent-security.md) for path identity, redaction, filesystem boundaries, and resource controls.
 
@@ -69,7 +80,7 @@ Abbreviated example:
 }
 ```
 
-Treat `scanId`, `entryId`, and cursors as opaque values. They are implementation identifiers, not durable external IDs.
+Treat `scanId`, `entryId`, and cursors as opaque values. They are implementation identifiers, not durable external IDs. A synchronous `scanId` is derived from the root path and aggregate size/count fields; it is not a globally unique identifier or a complete content hash.
 
 ## Session state and scan status are different
 
@@ -124,7 +135,7 @@ The query tools do not rescan the filesystem. They read these stored sections:
 | `usedu_get_issues` | `envelope.issues` |
 | `usedu_compare` | `envelope.root` and `envelope.entries` from both sessions |
 
-This means the original `depth`, `includeFiles`, and output limits determine what later queries can see.
+This means the original `depth`, `includeFiles`, and output limits determine what later queries can see. Data omitted or truncated from the envelope cannot be recovered by a later tool call.
 
 ## Typical workflows
 
@@ -132,7 +143,7 @@ As with a normal MCP connection, call `initialize` first, optionally inspect `to
 
 ### Synchronous scan
 
-A synchronous call blocks until the scan completes or fails.
+A synchronous call blocks until the scan completes or fails. While it is running, the stdio request loop does not process another input line.
 
 ```json
 {
@@ -207,14 +218,16 @@ Scans one allowed path and creates a session.
 | `includeFiles` | boolean, default `false` | Includes file, symlink, and other leaf entries within the retained depth and enables collection of `topFiles`. Without it, `entries` contains directories only. |
 | `dirsOnly` | boolean, default `false` | Filters `entries` to directories. It does not remove `topFiles` when `includeFiles` is also true. |
 | `sort` | `used`, `name`, `files`, or `dirs`; default `used` | Controls ordering while the envelope is built. Query tools have their own ordering rules described below. |
-| `fast` | boolean, default `false` | Uses approximate fast accounting. It can omit directory-own bytes, double-count hard links, and cross mounted filesystems that strict mode would skip. |
-| `crossFileSystems` | boolean, default `false` | Allows strict traversal into mounted filesystems below the requested root. Fast mode can cross filesystem boundaries even when this is false. |
+| `fast` | boolean, default `false` | Uses approximate fast accounting. It can omit directory-own bytes, double-count hard links, and traverse mounted filesystems that strict mode would skip. `envelope.semantics.accuracy` is `approximate`. |
+| `crossFileSystems` | boolean, default `false` | In strict mode, allows traversal into mounted filesystems below the requested root. Fast mode may cross filesystem boundaries even when this is false. |
 | `maxScanEntries` | positive integer, optional | Traversal budget. Exceeding it produces a stored partial envelope with a `RESOURCE_LIMIT_REACHED` issue. |
-| `maxScanDurationMs` | positive integer, optional | Traversal time budget in milliseconds. Exceeding it produces a stored partial envelope. |
+| `maxScanDurationMs` | positive integer, optional | Cooperative traversal time budget in milliseconds. It is checked during traversal rather than enforced as a hard preemptive timeout; observing it produces a stored partial envelope. |
 | `maxOutputEntries` | non-negative integer, optional | Truncates the stored `envelope.entries` array and sets envelope status to `limitReached`. |
 | `maxOutputBytes` | non-negative integer, optional | Best-effort serialized-size target. The implementation removes entries first, then top files and issue details, and sets `limitReached`. Mandatory envelope fields can still exceed a very small target. |
 | `redactPaths` | boolean, default `false` | Replaces `displayName` and `displayPath` with `[redacted]`. Reversible `pathRef` values remain present. |
 | `background` | boolean, default `false` | Runs the scan in a worker thread and returns the session before an envelope exists. |
+
+MCP scans always build a snapshot-mode envelope (`effectiveOptions.mode: "snapshot"`). Issue details are enabled by default, subject to `maxOutputBytes` truncation. The MCP tool does not expose a `jobs` argument; it uses the scanner default and reports the resolved value in `effectiveOptions.jobs`.
 
 #### Output
 
@@ -299,7 +312,7 @@ Lists direct children of an entry from the stored envelope.
 | --- | --- | --- |
 | `scanId` | string, required | Must refer to a session whose outer state is `complete`. |
 | `entryId` | string, required | Parent entry. The root entry ID is returned as `envelope.root.entryId`. |
-| `limit` | integer `1..500`, default `50` | Page size. Values outside this range are clamped. |
+| `limit` | integer `1..500`, default `50` | Page size. Runtime values are clamped to this range. |
 | `cursor` | string, optional | Opaque continuation cursor returned by the previous call. |
 
 #### Output
@@ -327,7 +340,7 @@ Ranks retained entries across all retained depths.
 | Field | Type / default | Behavior |
 | --- | --- | --- |
 | `scanId` | string, required | Must refer to a complete session. |
-| `limit` | integer `1..500`, default `50` | Maximum number of returned entries. Values outside this range are clamped. |
+| `limit` | integer `1..500`, default `50` | Maximum number of returned entries. Runtime values are clamped to this range. |
 | `kind` | optional enum | `directory`, `regularFile`, `symlink`, or `other`. |
 | `minUsedBytes` | non-negative integer, default `0` | Minimum allocated size. |
 
@@ -349,7 +362,7 @@ Pages through issue details stored in the envelope.
 | Field | Type / default | Behavior |
 | --- | --- | --- |
 | `scanId` | string, required | Must refer to a complete session. |
-| `limit` | integer `1..500`, default `50` | Page size. Values outside this range are clamped. |
+| `limit` | integer `1..500`, default `50` | Page size. Runtime values are clamped to this range. |
 | `cursor` | string, optional | Opaque continuation cursor. |
 
 #### Output
@@ -392,6 +405,8 @@ The implementation automatically marks the diff inexact when either input envelo
 
 For a meaningful comparison, callers must also use compatible roots and effective options, especially `depth`, `includeFiles`, `dirsOnly`, and output limits. The current implementation does not automatically reject every effective-option mismatch.
 
+A current session-ID limitation also affects comparisons: synchronous scans with the same root, aggregate `usedBytes`, file count, and directory count can reuse the same `scanId`, replacing the earlier session. For a reliable before/after comparison within one server process, run both scans with `background: true`, which allocates distinct process-local session IDs.
+
 ### `usedu_close_scan`
 
 Removes one session.
@@ -431,8 +446,8 @@ The server separates protocol/tool errors from scan issues.
 | Situation | Result |
 | --- | --- |
 | Unknown JSON-RPC method | JSON-RPC error `-32601` |
-| Missing/invalid tool argument, unknown tool, invalid cursor, unknown `scanId`, request outside allowlist, query before scan completion, or fatal synchronous scan failure | JSON-RPC error `-32602` |
-| Malformed input line or an internal request-handler failure | JSON-RPC error `-32603` with a null request ID |
+| Argument rejected by runtime validation, unknown tool, invalid cursor, unknown `scanId`, request outside allowlist, query before scan completion, or fatal synchronous scan failure | JSON-RPC error `-32602` |
+| Malformed input that fails before request dispatch, or an internal stdio handler failure | JSON-RPC error `-32603`, generally with `id: null` |
 | Filesystem read failure, cross-filesystem skip, or traversal budget reached after a scan envelope can be built | Successful tool response with structured `envelope.issues` and non-complete `envelope.status` |
 | Fatal error in an already-started background scan | Session state `failed` with `message` |
 | Observed background cancellation | Session state `cancelled` with `message` |
@@ -441,17 +456,18 @@ A successful JSON-RPC response does not imply a complete filesystem result. Alwa
 
 ## Current implementation boundaries
 
-The following points are intentional documentation of the current implementation, not promises of broader behavior:
+The following points describe the current implementation rather than a broader compatibility promise:
 
 - stdio is the only transport;
+- the implemented request methods are `initialize`, `tools/list`, and `tools/call`; requests without an `id` receive no response, and other methods return `-32601`;
 - allowed roots are configured at process startup;
-- requests without an `id` are treated as notifications and produce no response;
-- sessions and envelopes are not durable;
+- sessions and envelopes are not durable; synchronous `scanId` values are not guaranteed to be unique across scans with identical aggregate values;
 - query tools inspect the stored envelope and do not rescan the filesystem;
 - output truncation permanently removes data from that session;
 - `envelope.nextCursor` is part of the JSON v2 envelope, but current MCP query tools do not use it to retrieve truncated envelope data;
 - `usedu_list_children` and `usedu_top_entries` use allocated-size ordering rather than the original scan sort;
-- `tools/list` advertises input schemas; clients should use `structuredContent` and the JSON v2 schema for result validation.
+- fast traversal may cross filesystem boundaries even when `crossFileSystems` is false; the current `semantics.filesystemBoundaryPolicy` reflects the requested flag and does not encode this backend caveat;
+- `tools/list` advertises input schemas; behavior outside those schemas is not part of the contract. Clients should use `structuredContent` and the JSON v2 schema for result validation.
 
 Related contracts:
 
