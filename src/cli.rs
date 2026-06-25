@@ -139,12 +139,7 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn run_tui(
-    path: PathBuf,
-    cross_file_systems: bool,
-    fast: bool,
-    jobs: Option<usize>,
-) -> Result<()> {
+fn run_tui(path: PathBuf, cross_file_systems: bool, fast: bool, jobs: Option<usize>) -> Result<()> {
     let mut options = scan_options_with_jobs(jobs);
     options.cross_file_systems = cross_file_systems;
     options.include_files_in_output = false;
