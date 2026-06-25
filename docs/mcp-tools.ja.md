@@ -1,33 +1,73 @@
-# MCP stdio インターフェース
+# AI エージェントから MCP で `usedu` を使う
 
 [English](mcp-tools.md) | [日本語](mcp-tools.ja.md)
 
-`usedu mcp --stdio` は、標準入力と標準出力を使う、フォアグラウンド動作の読み取り専用 MCP サーバーです。
-走査結果をメモリ上のセッションとして保持するため、MCP クライアントは問い合わせのたびにファイルシステムを再走査せず、保存済みの結果を参照できます。
+`usedu mcp --stdio` は、AI エージェントなどの MCP クライアントから、許可したディレクトリのディスク使用状況を読み取り専用で調べるためのインターフェースです。
 
-この文書でいう `envelope` は、走査結果本体を格納するJSONオブジェクトです。現在の実装は、走査結果にschema version `usedu.scan.v2`、比較結果に `usedu.diff.v1` を使います。
+MCP を使う主な価値は、単に `usedu` を起動することではありません。エージェントが走査結果をセッションとして保持し、その結果に対して「大きい場所を探す」「子ディレクトリを掘り下げる」「問題を確認する」「2 回の走査を比較する」といった追加の問い合わせを行える点にあります。
 
-現在の実装には、次の特徴があります。
+## MCP で利用者が実現できること
 
-- トランスポートはstdioのみ
-- MCPプロトコルバージョン `2024-11-05` を通知
-- 1行につき1件のJSON-RPCメッセージを受け取り、応答も1行で返す
-- stdoutはプロトコルメッセージ専用、診断出力はstderr
-- セッションはすべてプロセス内のメモリに保持し、プロセス終了時に失われる
-- ファイルの削除、移動、隔離、削除候補の推薦は行わない
+| 利用者の目的 | エージェントが行う処理 | 主に使う tool |
+| --- | --- | --- |
+| どのディレクトリが容量を使っているか把握する | 許可済みルートを走査し、容量上位の保持済みエントリを抽出する | `usedu_scan`、`usedu_top_entries` |
+| 大きなファイルを探す | 通常ファイルを含めて走査し、走査全体から収集した `topFiles` を読む | `usedu_scan` |
+| 特定ディレクトリを掘り下げる | 保存済み結果から直下の子をページ単位で取得する | `usedu_list_children` |
+| 結果が不完全な理由を確認する | 権限エラー、別ファイルシステムのスキップ、走査上限到達などを取得する | `usedu_get_issues` |
+| 長い走査の進捗を確認・停止する | バックグラウンド走査を開始し、進捗をポーリングして必要ならキャンセルする | `usedu_scan_status`、`usedu_cancel_scan` |
+| 2 時点で何が増減したか確認する | 同じサーバープロセス内の 2 つの走査セッションを比較する | `usedu_compare` |
+| エージェントに見せるパス情報を減らす | 表示名と表示パスを伏せて走査する | `redactPaths: true` |
 
-## まず理解しておくべき流れ
+利用者は、たとえばエージェントに次のように依頼できます。
+
+- 「`~/Library` の中で容量を多く使っているディレクトリを上位 10 件調べて」
+- 「このプロジェクト配下で大きい通常ファイルを探して」
+- 「`Application Support` の直下を容量順に見せて」
+- 「走査結果が partial になった理由を説明して」
+- 「この処理は長そうなのでバックグラウンドで走査し、必要なら止めて」
+- 「同じディレクトリを変更前後で走査し、増えた場所を調べて」
+
+## MCP で実現しないこと
+
+MCP を使っても、`usedu` のプロダクト境界は変わりません。
+
+- ファイルやディレクトリを削除、移動、変更、隔離しない
+- 「安全に削除できる」と判定しない
+- cleanup 候補を推薦しない
+- ファイル内容を読まない
+- allowlist 外を走査しない
+- 表示された `Used` が削除後に解放される容量だとは保証しない
+- リアルタイム監視やバックグラウンド daemon として常駐しない
+
+MCP セッションはメモリ上だけに存在し、サーバー終了後には残りません。再起動をまたぐ比較には、CLI の snapshot を使います。
+
+```bash
+usedu snapshot PATH > before.usedu.json
+usedu snapshot PATH > after.usedu.json
+usedu compare before.usedu.json after.usedu.json
+```
+
+## 基本的な仕組み
 
 ```text
 1. サーバー起動時に、走査を許可するルートを指定する
-2. usedu_scanで走査し、scanIdを受け取る
-3. scanIdを使って、保存済み結果の子要素・上位要素・問題一覧を参照する
-4. 不要になったセッションをusedu_close_scanで削除する
+2. usedu_scan で走査し、scanId を受け取る
+3. scanId を使って、保存済み結果へ追加の問い合わせを行う
+4. 不要になったセッションを usedu_close_scan で破棄する
 ```
 
-`usedu_list_children`、`usedu_top_entries`、`usedu_get_issues`、`usedu_compare` は、保存済みの走査結果を参照するtoolです。これらのtoolはファイルシステムを再走査しません。
+後続の query tool は、保存済みの走査結果を参照します。ファイルシステムを再走査しません。
 
-## サーバーの起動
+```text
+envelope.root       走査ルート
+envelope.entries    depth と filter に従って保持したエントリ
+envelope.topFiles   走査全体から収集した大きな通常ファイル
+envelope.issues     ファイルシステム上の問題や走査上限の詳細
+```
+
+このため、最初の `usedu_scan` で指定した `depth`、`includeFiles`、出力上限が、後続の問い合わせで見える範囲を決めます。省略または切り詰められたデータは、後から復元できません。
+
+## サーバーを起動する
 
 ```bash
 usedu mcp --stdio \
@@ -38,443 +78,307 @@ usedu mcp --stdio \
 
 | オプション | 既定値 | 動作 |
 | --- | --- | --- |
-| `--stdio` | 必須 | stdioサーバーを起動します。HTTPトランスポートは実装されていません。 |
-| `--allow-root PATH` | 現在のディレクトリ | 複数回指定できます。正規化した許可ルート配下の既存パスだけを走査できます。 |
+| `--stdio` | 必須 | stdio MCP サーバーを起動します。HTTP transport は未実装です。 |
+| `--allow-root PATH` | 現在のディレクトリ | 複数回指定できます。正規化後にこの配下となる既存パスだけを走査できます。 |
 | `--max-sessions N` | `8` | プロセス内に保持するセッション数の上限です。`1` 未満は `1` として扱います。 |
 
-許可ルートはサーバー起動時に固定されます。toolの引数から許可範囲を広げることはできません。現在の実装は、MCPクライアントが提示する `roots` を動的には取り込みません。
+許可ルートはサーバー起動時に固定されます。現在の実装は、MCP client の `roots` を動的には取り込みません。
 
-許可ルートと走査要求のパスは、どちらも正規化（canonicalize）されます。シンボリックリンク経由を含め、解決後のパスが許可範囲外になる要求は、走査開始前に拒否されます。対象パスが存在せず正規化できない場合もエラーになります。
+許可ルートと走査対象は `canonicalize` されます。シンボリックリンク経由を含め、解決後のパスが allowlist 外になる要求は走査前に拒否されます。存在しないパスも拒否されます。
 
-パスの識別、表示パスの伏字化、ファイルシステム境界、リソース制御については、[Agent Security Boundary](agent-security.ja.md)も参照してください。
+## 目的別の使い方
 
-## `tools/call` 応答の構造
+### 容量を使っているディレクトリを把握する
 
-`tools/call` が成功すると、toolごとの結果が次の2か所に入ります。
-
-- `result.structuredContent`: クライアント実装が利用すべき構造化データ
-- `result.content[0].text`: 同じ値をJSON文字列にした、テキスト中心のクライアント向け表現
-
-省略した応答例:
+最初に、ディレクトリを十分な深さまで保持して走査します。
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 3,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"scanId\":\"scan_...\",\"state\":\"complete\",...}"
-      }
-    ],
-    "structuredContent": {
-      "scanId": "scan_...",
-      "state": "complete",
-      "envelope": {
-        "schemaVersion": "usedu.scan.v2",
-        "status": { "state": "complete", "partialReasons": [] }
-      }
-    }
-  }
+  "root": "/Users/example/Library",
+  "depth": 2,
+  "includeFiles": false,
+  "sort": "used"
 }
 ```
 
-`scanId`、`entryId`、cursorは、中身を解釈しない不透明な値として扱ってください。永続的な外部IDではありません。
+続いて `usedu_top_entries` を `kind: "directory"` で呼び出すと、保持済み階層全体から容量上位のディレクトリを取得できます。
 
-同期走査の `scanId` は、ルートパスと集計後のサイズ・件数から生成されます。そのため、グローバルに一意なIDでも、走査内容全体のcontent hashでもありません。比較時の注意点は [`usedu_compare`](#usedu_compare) を参照してください。
+注意点として、`usedu_scan` の `top` は MCP では `envelope.topFiles` の件数を制限します。`envelope.entries` やディレクトリ上位件数を制限する引数ではありません。ディレクトリの上位件数は `usedu_top_entries.limit` で指定します。
 
-## セッション状態と走査結果の状態は別物
+### 大きな通常ファイルを探す
 
-状態には、互いに独立した2つの階層があります。
+```json
+{
+  "root": "/Users/example/Projects",
+  "depth": 1,
+  "includeFiles": true,
+  "top": 50
+}
+```
 
-### MCPセッションの `state`
+完了した `envelope.topFiles` には、保持深度にかかわらず走査全体から収集した大きな通常ファイルが最大 50 件入ります。
 
-外側の `state` は、サーバー側の処理が保存済み `envelope` を生成したかを表します。
+`usedu_top_entries` で `kind: "regularFile"` を指定した場合は意味が異なります。こちらは `envelope.entries` に保持された通常ファイルだけを順位付けします。
 
-| State | 意味 | `envelope` |
+### ディレクトリを掘り下げる
+
+`usedu_list_children` に親の `entryId` を渡します。ルートの ID は `envelope.root.entryId` です。
+
+```json
+{
+  "scanId": "mcp_scan_...",
+  "entryId": "entry_...",
+  "limit": 50
+}
+```
+
+最初の走査で必要な深さを保持していなかった場合、後から子を復元することはできません。その場合は、対象ディレクトリを新しい `root` として `usedu_scan` し直します。対象は起動時の allowlist 内である必要があります。
+
+### 長い走査をバックグラウンドで実行する
+
+```json
+{
+  "root": "/Users/example/Library",
+  "background": true,
+  "maxScanDurationMs": 60000
+}
+```
+
+初回応答は `state: "running"` で、まだ `envelope` を含みません。`usedu_scan_status` を呼び、完了結果も必要なら `includeEnvelope: true` を指定します。
+
+`usedu_cancel_scan` は協調的なキャンセル要求です。直後の応答がまだ `running` でも異常ではありません。状態が変わるまで status を確認します。
+
+同期走査中は stdio request loop が次の要求を処理できないため、進捗確認やキャンセルが必要な走査では `background: true` を使います。
+
+### 2 回の走査を比較する
+
+`usedu_compare` は、同じサーバープロセス内に保持された 2 つの走査結果を比較します。
+
+現在の同期走査 ID はルートパスと集計値から生成されるため、同じルートでサイズと件数が変わらない 2 回の同期走査は同じ `scanId` となり、先のセッションを置き換える場合があります。before/after 比較では、異なるプロセス内 ID が割り当てられる `background: true` の走査を 2 回使うのが安全です。
+
+比較する 2 回の走査では、少なくとも次を揃えます。
+
+- `root`
+- `depth`
+- `includeFiles`
+- `dirsOnly`
+- `fast`
+- `crossFileSystems`
+- 出力上限
+
+片方が partial または `limitReached`、あるいは accounting semantics が異なる場合、diff は `exact: false` となり、変更は `uncertain` として扱われます。すべての option mismatch が自動検出されるわけではありません。
+
+### 不完全な結果の理由を確認する
+
+`envelope.status.state` が `partial` または `limitReached` の場合は、次を確認します。
+
+- `envelope.status.partialReasons`
+- `envelope.issueSummary`
+- `usedu_get_issues`
+
+issue には、権限エラー、走査中の消失、別ファイルシステムのスキップ、走査上限到達などが含まれます。
+
+## 2 種類の状態
+
+MCP の外側の `state` と、走査結果内の `envelope.status.state` は別物です。
+
+### セッションの `state`
+
+| 値 | 意味 | `envelope` |
 | --- | --- | --- |
-| `running` | バックグラウンド走査を実行中 | なし |
-| `complete` | 走査処理が終了し、走査結果を保存済み | あり |
-| `cancelled` | バックグラウンド走査がキャンセルを検知した | 現在の実装ではなし |
-| `failed` | バックグラウンド走査が致命的エラーで終了した | なし |
+| `running` | バックグラウンド走査中 | なし |
+| `complete` | 走査処理が終了し、結果を保存済み | あり |
+| `cancelled` | バックグラウンド走査がキャンセルを検知 | 現在の実装ではなし |
+| `failed` | バックグラウンド走査が致命的エラーで終了 | なし |
 
 ### `envelope.status.state`
 
-内側の `envelope.status.state` は、ファイルシステム走査結果の完全性を表します。
-
-| State | 意味 |
+| 値 | 意味 |
 | --- | --- |
-| `complete` | 走査上の問題と出力切り詰めが記録されていない |
-| `partial` | `envelope` は生成できたが、ファイルシステム上の問題または走査上限により結果が不完全 |
-| `limitReached` | `maxOutputEntries` または `maxOutputBytes` により、出力の一部を切り詰めた |
+| `complete` | 走査 issue と出力切り詰めが記録されていない |
+| `partial` | 結果は生成できたが、権限エラーや走査上限などにより不完全 |
+| `limitReached` | `maxOutputEntries` または `maxOutputBytes` で出力を切り詰めた |
 
-したがって、次の組み合わせはいずれも正常です。
+したがって、セッションが `complete` でも、`envelope` は `partial` または `limitReached` の場合があります。
 
-- 権限エラーや走査上限到達後の、セッション `complete` + `envelope.status.state: "partial"`
-- 出力切り詰め後の、セッション `complete` + `envelope.status.state: "limitReached"`
-- バックグラウンド走査をキャンセルした後の、セッション `cancelled` + `envelope` なし
+## Tool 一覧
 
-結果を完全なものとして扱う前に、必ず両方の状態を確認してください。
-
-## 走査セッションに保存されるデータ
-
-完了したセッションは、1つの `ScanEnvelope` をメモリ上に保持します。
-
-```text
-envelope.root       ルートエントリ1件
-envelope.entries    depthとフィルター条件に従って保持したエントリの平坦な配列
-envelope.topFiles   走査全体から収集した大きな通常ファイル
-envelope.issues     保存済みのファイルシステム上の問題と走査上限の詳細
-```
-
-各参照toolが参照する範囲は次のとおりです。
-
-| Tool | 参照する保存済みデータ |
-| --- | --- |
-| `usedu_list_children` | `envelope.entries` |
-| `usedu_top_entries` | `envelope.entries` |
-| `usedu_get_issues` | `envelope.issues` |
-| `usedu_compare` | 両セッションの `envelope.root` と `envelope.entries` |
-
-このため、最初の走査で指定した `depth`、`includeFiles`、出力上限によって、後続の問い合わせで見える範囲が決まります。省略または切り詰められたデータを、後続のtoolで復元することはできません。
-
-## 基本的な利用フロー
-
-通常のMCP接続と同様に、最初に `initialize` を行い、必要に応じて `tools/list` でtool定義を取得した後、`tools/call` を使います。
-
-### 同期走査
-
-同期呼び出しは、走査が完了または失敗するまで応答しません。走査中は、stdioのrequest loopも次の入力行を処理しません。
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "usedu_scan",
-    "arguments": {
-      "root": "/Users/example/Library",
-      "depth": 2,
-      "includeFiles": true,
-      "top": 30
-    }
-  }
-}
-```
-
-成功時は `structuredContent.state` が `complete` となり、`structuredContent.envelope` が含まれます。この外側の `complete` は「`envelope` を生成できた」という意味です。部分走査や出力切り詰めの有無は `envelope.status` で確認します。
-
-返された `scanId` は、`usedu_list_children`、`usedu_top_entries`、`usedu_get_issues`、`usedu_compare`、`usedu_close_scan` で利用できます。
-
-### バックグラウンド走査
-
-`background: true` を指定すると、走査完了を待たずに応答します。
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "usedu_scan",
-    "arguments": {
-      "root": "/Users/example/Library",
-      "background": true
-    }
-  }
-}
-```
-
-最初の応答は `state: "running"` で、`envelope` は含まれません。`usedu_scan_status` で状態を確認し、完了した `envelope` が必要な呼び出しでは `includeEnvelope: true` を指定します。
-
-キャンセルは協調的に処理されます。`usedu_cancel_scan` はキャンセルを要求するだけなので、直後の応答がまだ `state: "running"` でも異常ではありません。状態が変わるまで `usedu_scan_status` を呼び出してください。
-
-## Tool一覧
-
-| Tool | 用途 |
+| Tool | できること |
 | --- | --- |
 | `usedu_scan` | 同期またはバックグラウンドで走査し、セッションを作成する |
-| `usedu_scan_status` | バックグラウンド走査の進捗を確認し、必要に応じて完了済み `envelope` を取得する |
-| `usedu_cancel_scan` | 実行中の走査に協調的なキャンセルを要求する |
-| `usedu_list_children` | `envelope` に保持された直下の子をページ単位で取得する |
-| `usedu_top_entries` | 保存済みtree全体の保持済みエントリを順位付けする |
-| `usedu_get_issues` | 保存済みissueの詳細をページ単位で取得する |
-| `usedu_compare` | 2つのセッションのルートと保持済みエントリを比較する |
+| `usedu_scan_status` | バックグラウンド走査の進捗と完了結果を取得する |
+| `usedu_cancel_scan` | 実行中の走査にキャンセルを要求する |
+| `usedu_list_children` | 保持済み結果から直下の子をページ単位で取得する |
+| `usedu_top_entries` | 保持済みエントリ全体を容量順に取得する |
+| `usedu_get_issues` | 保存済み issue details をページ単位で取得する |
+| `usedu_compare` | 2 つの保存済み走査結果を比較する |
 | `usedu_close_scan` | セッションを削除し、実行中ならキャンセルも要求する |
 
-## Toolリファレンス
+## Tool リファレンス
 
 ### `usedu_scan`
 
-許可されたパスを走査し、セッションを作成します。
-
-#### 入力
+主な input:
 
 | Field | 型・既定値 | 実際の動作 |
 | --- | --- | --- |
-| `root` | string、必須 | 走査する既存パス。正規化後のパスが、起動時に設定した許可リスト内にある必要があります。 |
-| `depth` | `0` 以上の整数、既定値 `1` | 走査を打ち切る深さではなく、結果として保持する深さです。`0` はルートのみ、`1` は直下の子までです。下位階層もディレクトリ合計を集計するために走査されます。 |
-| `top` | `0` 以上の整数、既定値 `30` | `envelope.topFiles` の件数を制限します。MCPが作るsnapshot形式の `envelope` では、`envelope.entries` の件数を制限しません。 |
-| `includeFiles` | boolean、既定値 `false` | 保持深度内の通常ファイル、シンボリックリンク、その他のleafエントリを `entries` に含め、`topFiles` の収集を有効にします。未指定の場合、`entries` にはディレクトリだけが入ります。 |
-| `dirsOnly` | boolean、既定値 `false` | `entries` をディレクトリだけに絞ります。`includeFiles` も `true` の場合、`topFiles` は削除しません。 |
-| `sort` | `used`、`name`、`files`、`dirs`、既定値 `used` | `envelope` 構築時の順序を指定します。後続の参照toolは、後述する独自の順序を使います。 |
-| `fast` | boolean、既定値 `false` | 概算の高速集計を使います。ディレクトリ自身の割り当て済みbytesを省略する、ハードリンクを重複計上する、厳密モードなら除外するマウント済みファイルシステムを走査する、といった可能性があります。`envelope.semantics.accuracy` は `approximate` になります。 |
-| `crossFileSystems` | boolean、既定値 `false` | 厳密モードでは、要求したroot配下のマウント済みファイルシステムへ走査を広げます。高速モードは `false` でも境界を越える場合があります。 |
-| `maxScanEntries` | 正の整数、任意 | 走査するエントリ数の上限です。上限を超えた時点で、`RESOURCE_LIMIT_REACHED` issueを含む部分的な `envelope` を保存します。 |
-| `maxScanDurationMs` | 正の整数、任意 | ミリ秒単位の協調的な走査時間上限です。強制的に処理を止めるタイムアウトではなく、走査中の確認処理で上限超過を検知した時点で、部分的な `envelope` を保存します。 |
-| `maxOutputEntries` | `0` 以上の整数、任意 | 保存する `envelope.entries` を切り詰め、`envelope.status.state` を `limitReached` にします。 |
-| `maxOutputBytes` | `0` 以上の整数、任意 | シリアライズ後のサイズに対する、達成を保証しない目標値です。実装は `entries`、`topFiles`、`issues` の順で要素を削り、`limitReached` にします。必須フィールドだけで、非常に小さい上限を超えることがあります。 |
-| `redactPaths` | boolean、既定値 `false` | `displayName` と `displayPath` を `[redacted]` に置き換えます。可逆的な `pathRef` は残ります。 |
-| `background` | boolean、既定値 `false` | ワーカースレッドで走査し、`envelope` 生成前にセッションを返します。 |
+| `root` | string、必須 | 既存パス。正規化後に起動時 allowlist 内である必要があります。 |
+| `depth` | `0` 以上、既定 `1` | 走査深度ではなく保持深度です。`0` は root のみ、`1` は直下まで保持します。集計のための traversal 自体は子孫まで行います。 |
+| `top` | `0` 以上、既定 `30` | `envelope.topFiles` の上限です。MCP の `entries` 件数は制限しません。 |
+| `includeFiles` | boolean、既定 `false` | 保持深度内の通常ファイル、symlink、other を `entries` に含め、`topFiles` の収集を有効にします。 |
+| `dirsOnly` | boolean、既定 `false` | `entries` を directory のみにします。`includeFiles: true` のときの `topFiles` は消しません。 |
+| `sort` | `used` / `name` / `files` / `dirs`、既定 `used` | envelope 構築時の順序です。後続 query tool は別の並び順を使います。 |
+| `fast` | boolean、既定 `false` | approximate accounting。directory own bytes の省略、hard link の重複計上、strict なら skip する mount の traversal が起こり得ます。 |
+| `crossFileSystems` | boolean、既定 `false` | strict mode で mount 配下を含めます。fast mode は false でも filesystem boundary を越える場合があります。 |
+| `maxScanEntries` | positive integer、任意 | traversal budget。到達時は `RESOURCE_LIMIT_REACHED` を含む partial envelope を返します。 |
+| `maxScanDurationMs` | positive integer、任意 | traversal 中に確認する協調的な時間上限です。hard timeout ではありません。 |
+| `maxOutputEntries` | non-negative integer、任意 | 保存する `envelope.entries` を切り詰め、status を `limitReached` にします。 |
+| `maxOutputBytes` | non-negative integer、任意 | serialized size の best-effort 上限です。entries、topFiles、issues の順で末尾から削ります。必須 field だけで上限を超える場合があります。 |
+| `redactPaths` | boolean、既定 `false` | `displayName` と `displayPath` を `[redacted]` にします。可逆的な `pathRef` は残ります。 |
+| `background` | boolean、既定 `false` | worker thread で走査し、完了前に session を返します。 |
 
-MCP走査は常にsnapshotモードの `envelope`（`effectiveOptions.mode: "snapshot"`）を作ります。issueの詳細は既定で有効ですが、`maxOutputBytes` によって削除される場合があります。
-
-MCP toolには `jobs` 引数がありません。スキャナーの既定値を使い、解決後の値を `effectiveOptions.jobs` に記録します。
-
-#### 出力
-
-```text
-scanId
-schemaVersion
-state
-progress
-[envelope]
-```
-
-`envelope` は成功した同期走査では含まれ、バックグラウンド走査の最初の応答では省略されます。
-
-`progress` は次のフィールドを持ちます。
-
-```text
-elapsedMs
-entriesSeen
-filesSeen
-dirsSeen
-errorsSeen
-done
-```
-
-`envelope.topFiles` と `usedu_top_entries` は異なる結果集合です。
-
-- `topFiles` は走査全体で見つかった大きな通常ファイルを返し、`top` で件数を制限します。
-- `usedu_top_entries` は `envelope.entries` に保持済みのエントリだけを順位付けします。
+MCP scan は常に snapshot mode の envelope を作ります。`effectiveOptions.mode` は `snapshot` です。MCP tool は `jobs` 引数を公開しておらず、scanner default を使います。
 
 ### `usedu_scan_status`
 
-1つのセッションの現在状態を返します。
-
-#### 入力
-
-| Field | 型・既定値 | 動作 |
-| --- | --- | --- |
-| `scanId` | string、必須 | 確認するセッションです。 |
-| `includeEnvelope` | boolean、既定値 `false` | セッションの `state` が `complete` の場合だけ `envelope` を追加します。 |
-
-#### 出力
+Input:
 
 ```text
 scanId
-schemaVersion
-state
-progress
-[envelope]
-[message]
+includeEnvelope?   default: false
 ```
 
-`message` は `cancelled` または `failed` の場合に含まれます。このtoolを呼ぶと、セッションの最終利用時刻が更新されます。
+`includeEnvelope: true` でも、session が `complete` の場合だけ `envelope` を返します。呼び出すと session の最終利用時刻が更新されます。
 
 ### `usedu_cancel_scan`
 
-実行中のバックグラウンド走査にキャンセルを要求します。
-
-#### 入力
+Input:
 
 ```text
 scanId
 ```
 
-#### 出力
-
-```text
-scanId
-cancelRequested
-state
-progress
-```
-
-`cancelRequested` が `true` になるのは、呼び出し時点でセッションがまだ `running` の場合だけです。ワーカーがすでに停止したことを意味しません。
+`cancelRequested` は、呼び出し時点で session が `running` だった場合だけ `true` です。worker の停止完了を意味しません。
 
 ### `usedu_list_children`
 
-保存済み `envelope` から、指定エントリの直下の子を返します。
-
-#### 入力
-
-| Field | 型・既定値 | 動作 |
-| --- | --- | --- |
-| `scanId` | string、必須 | 外側のセッションの `state` が `complete` である必要があります。 |
-| `entryId` | string、必須 | 親エントリです。rootのIDは `envelope.root.entryId` で取得できます。 |
-| `limit` | integer `1..500`、既定値 `50` | 1ページの件数です。実行時の値はこの範囲へ丸められます。 |
-| `cursor` | string、任意 | 直前の応答で返された不透明な継続cursorです。 |
-
-#### 出力
+Input:
 
 ```text
 scanId
 entryId
-items
-nextCursor
+limit?    default: 50, runtime range: 1..500
+cursor?
 ```
 
-現在の実装では、次の点に注意してください。
+現在の動作:
 
-- `envelope.entries` に保存済みの直下の子だけが検索対象です。
-- 結果は、`usedu_scan` の `sort` に関係なく `usedBytes` の降順です。
-- 未知の `entryId` またはleafエントリのIDを指定すると、エラーではなく空のページを返します。
-- `depth`、`includeFiles`、`maxOutputEntries`、`maxOutputBytes` により省略されたエントリは、このtoolでは復元できません。
+- `envelope.entries` に保持済みの direct children だけを返す
+- `usedu_scan.sort` にかかわらず `usedBytes` 降順
+- 不明な `entryId` や leaf の `entryId` は error ではなく空配列
+- `depth` や出力上限で省略した entry は取得不能
 
 ### `usedu_top_entries`
 
-保持深度全体にある保存済みエントリを順位付けします。
-
-#### 入力
-
-| Field | 型・既定値 | 動作 |
-| --- | --- | --- |
-| `scanId` | string、必須 | `complete` セッションを指定します。 |
-| `limit` | integer `1..500`、既定値 `50` | 返すエントリ数の上限です。実行時の値はこの範囲へ丸められます。 |
-| `kind` | optional enum | `directory`、`regularFile`、`symlink`、`other`。 |
-| `minUsedBytes` | `0` 以上の整数、既定値 `0` | 最小の割り当て済みサイズです。 |
-
-#### 出力
+Input:
 
 ```text
 scanId
-items
+limit?          default: 50, runtime range: 1..500
+kind?           directory | regularFile | symlink | other
+minUsedBytes?   default: 0
 ```
 
-rootは対象外です。`envelope.entries` を `usedBytes` の降順で返し、cursorによるページ分割はありません。このtoolは `envelope.topFiles` を参照せず、元の `envelope` に保持されなかったエントリも探索しません。
+root を除く `envelope.entries` 全体を `usedBytes` 降順で返します。cursor pagination はありません。`envelope.topFiles` は参照しません。
 
 ### `usedu_get_issues`
 
-`envelope` に保存されたissueの詳細をページ単位で返します。
-
-#### 入力
-
-| Field | 型・既定値 | 動作 |
-| --- | --- | --- |
-| `scanId` | string、必須 | `complete` セッションを指定します。 |
-| `limit` | integer `1..500`、既定値 `50` | 1ページの件数です。実行時の値はこの範囲へ丸められます。 |
-| `cursor` | string、任意 | 不透明な継続cursorです。 |
-
-#### 出力
+Input:
 
 ```text
 scanId
-items
-nextCursor
+limit?    default: 50, runtime range: 1..500
+cursor?
 ```
 
-issueには、ファイルシステム読取エラー、policyに基づく除外、走査上限到達などが含まれます。`maxOutputBytes` で一部のissue detailが削除されても、`envelope.issueSummary` には集計値が残ります。ただし、削除された詳細を現在のセッションから後で取得することはできません。
+`maxOutputBytes` によって issue details が削られていても、`issueSummary` の集計値は残ります。ただし削除済み details は後から取得できません。
 
 ### `usedu_compare`
 
-保存済みの2つのscan envelopeを比較します。
-
-#### 入力
+Input:
 
 ```text
 beforeScanId
 afterScanId
 ```
 
-#### 出力
-
-次のフィールドを持つ `usedu.diff.v1` envelopeです。
-
-```text
-schemaVersion
-status
-beforeScanId
-afterScanId
-summary
-changes
-```
-
-比較対象はrootと保持済みの `entries` で、識別には `pathRef` を使います。`topFiles` とissue recordは比較しません。
-
-どちらかの `envelope.status.state` が `complete` でない場合、または集計semanticsが異なる場合、実装はdiffを自動的に不正確とします。不正確なdiffでは、各changeを `uncertain` として返します。
-
-意味のある比較にするため、呼び出し側でもrootとeffective optionsをそろえてください。特に `depth`、`includeFiles`、`dirsOnly`、出力上限が重要です。現在の実装は、すべてのeffective optionsの不一致を自動検出するわけではありません。
-
-現在のセッションID生成にも比較上の制約があります。同じroot、集計後の `usedBytes`、ファイル数、ディレクトリ数を持つ同期走査は、同じ `scanId` を再利用して以前のセッションを置き換える場合があります。同一サーバープロセス内で変更前・変更後を確実に比較する場合は、両方を `background: true` で走査してください。この場合はプロセス内で別々のセッションIDが割り当てられます。
+`usedu.diff.v1` envelope を返します。比較対象は各 envelope の root と retained `entries` です。`topFiles` と issues は比較しません。
 
 ### `usedu_close_scan`
 
-セッションを1つ削除します。
-
-#### 入力
+Input:
 
 ```text
 scanId
 ```
 
-#### 出力
+`closed` は session を削除できた場合に `true` です。実行中 session を閉じるとキャンセルも要求します。
 
-```text
-scanId
-closed
-```
+## セッションの保持期間
 
-セッションを削除した場合は `closed: true`、すでに存在しない場合は `false` です。実行中のセッションをcloseすると、キャンセルも要求します。
+- 既定の最大数は 8。`--max-sessions` で変更可能
+- 上限到達時は、最終利用時刻が最も古い session を削除
+- inactivity TTL は現在 30 分固定
+- TTL cleanup は専用 timer ではなく、次の request の前に遅延実行
+- status と query tool の呼び出しで最終利用時刻を更新
+- process 終了、TTL、eviction、close の後は `scanId` を利用できない
 
-## セッションの保持
+## パスとプライバシー
 
-セッションはプロセス内のメモリにだけ保持されます。
+- `displayName` と `displayPath` は表示専用
+- 1 回の scan 内の参照には `entryId` を使う
+- 可逆的な path identity には `pathRef` を使う
+- `redactPaths: true` でも `pathRef` は残る
 
-- 既定の上限は8件で、`--max-sessions` で変更できます。
-- 上限に達すると、新しいセッションを追加する前に、最終更新時刻が最も古いセッションを削除します。
-- 実行中のセッションを削除する場合はキャンセルを要求します。
-- 無操作TTLは現在30分に固定されています。
-- 期限切れセッションは専用タイマーではなく、次のrequestを処理する直前に遅延削除されます。
-- statusおよび問い合わせtoolの呼び出しは、セッションの最終利用時刻を更新します。
+`pathRef` は Unix path bytes を可逆的に表現するため、信頼できない相手へ転送するとパス情報が漏れる可能性があります。
 
-`scanId` を永続化したり、サーバー再起動、TTL切れ、上限超過による削除、`usedu_close_scan` の後も有効だと仮定したりしないでください。
+## 応答形式
 
-## エラーモデル
+成功した `tools/call` は tool 固有の payload を 2 か所へ返します。
 
-プロトコル/toolのエラーと、走査中に記録したissueは別経路で返します。
+- `result.structuredContent`: machine client が使う構造化値
+- `result.content[0].text`: 同じ値を JSON text にした互換表現
+
+`scanId`、`entryId`、cursor は opaque value として扱います。永続 ID ではありません。
+
+現在のサーバーは stdio のみを実装し、MCP protocol version `2024-11-05` を通知します。stdin から 1 行 1 JSON-RPC message を受け取り、stdout に 1 行 1 response を返します。diagnostics は stderr に出します。
+
+## Error model
 
 | 状況 | 結果 |
 | --- | --- |
-| 未知のJSON-RPC method | JSON-RPC error `-32601` |
-| 実行時validationで拒否された引数、未知のtool、不正cursor、未知の`scanId`、allowlist外の要求、走査完了前の問い合わせ、同期走査の致命的エラー | JSON-RPC error `-32602` |
-| request dispatch前に失敗する不正入力、またはstdio handler内部のエラー | 通常は `id: null` を伴うJSON-RPC error `-32603` |
-| envelopeを生成できる段階で発生したファイルシステム読取エラー、cross-filesystem skip、走査上限到達 | 成功したtool応答内の `envelope.issues` と、完全ではない `envelope.status` |
-| 開始済みバックグラウンド走査の致命的エラー | セッションの `state` `failed` と `message` |
-| バックグラウンド走査がキャンセルを検知 | セッションの `state` `cancelled` と `message` |
+| 未知の JSON-RPC method | JSON-RPC error `-32601` |
+| 不正 argument、未知 tool、invalid cursor、unknown `scanId`、allowlist 外、完了前 query、同期走査の fatal error | JSON-RPC error `-32602` |
+| dispatch 前の malformed input または内部 stdio handler failure | JSON-RPC error `-32603`、通常 `id: null` |
+| permission error、filesystem policy skip、traversal budget | successful tool response 内の `envelope.issues` と non-complete status |
+| background scan の fatal error | session `failed` と `message` |
+| background cancellation を検知 | session `cancelled` と `message` |
 
-JSON-RPCとして成功していても、ファイルシステム走査結果が完全とは限りません。必ず `envelope.status` と `envelope.issueSummary` を確認してください。
+JSON-RPC が成功しても、ファイルシステム走査が完全とは限りません。`envelope.status` と `envelope.issueSummary` を確認してください。
 
 ## 現在の実装上の制約
 
-以下は、将来の拡張を保証するものではなく、現在の実装を正確に説明するための制約です。
+- transport は stdio のみ
+- allowed roots は process 起動時に固定
+- session は非永続
+- query tool は再走査せず、stored envelope だけを見る
+- output truncation で失われた data は session 内でも復元不能
+- `envelope.nextCursor` は JSON v2 field だが、MCP query tool は truncated envelope の続きを取得する用途には使わない
+- `usedu_list_children` と `usedu_top_entries` は元の scan sort ではなく `usedBytes` 順
+- 永続 snapshot の import や、process 再起動をまたぐ MCP compare は未実装
 
-- トランスポートはstdioのみです。
-- 実装済みrequest methodは `initialize`、`tools/list`、`tools/call` です。`id`のないrequestには応答せず、それ以外のmethodは `-32601` を返します。
-- 許可ルートはプロセス起動時に設定します。
-- セッションとenvelopeは永続化されません。同期走査の `scanId` は、集計値が同じ複数の走査間で一意になるとは限りません。
-- 参照toolは保存済みenvelopeを調べるだけで、ファイルシステムを再走査しません。
-- 出力切り詰めで削除されたデータは、そのセッションでは復元できません。
-- `envelope.nextCursor`はJSON v2 envelopeのフィールドですが、現在のMCP参照toolは、切り詰めたenvelope dataの取得には使いません。
-- `usedu_list_children`と`usedu_top_entries`は、元の走査時のsortではなく割り当て済みサイズ順を使います。
-- fast traversalは、`crossFileSystems`がfalseでもファイルシステム境界を越える場合があります。現在の`semantics.filesystemBoundaryPolicy`は要求されたflagを反映するため、このbackend固有の注意点までは表現しません。
-- `tools/list`が公開するのはinput schemaです。schema外の入力に対する挙動は契約対象ではありません。結果検証には `structuredContent` とJSON v2 schemaを使ってください。
+関連文書:
 
-関連する契約:
-
-- [Filesystem Semantics](semantics.ja.md)
-- [JSON Contract](json-contract.ja.md)
+- [ファイルシステム意味論](semantics.ja.md)
+- [JSON 契約](json-contract.ja.md)
 - [Agent Security Boundary](agent-security.ja.md)
