@@ -8,7 +8,7 @@ mod scan;
 
 pub use errors::ScannerError;
 pub use metadata::{allocated_bytes, device_id, inode_id, link_count};
-pub use options::ScanOptions;
+pub use options::{ScanBudget, ScanOptions};
 pub use progress::{ScanCancellation, ScanProgress, ScanProgressSnapshot};
 pub use result::{
     CurrentLevelScan, DirSummary, EntryCounts, EntryKind, EntrySummary, FileSummary,

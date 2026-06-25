@@ -43,11 +43,13 @@ struct DirTotals {
 struct ScanState {
     options: ScanOptions,
     root_dev: u64,
+    started_at: Instant,
     shared: Arc<SharedScanState>,
 }
 
 struct SharedScanState {
     errors: Mutex<Vec<ScanErrorRecord>>,
+    entries_seen: AtomicU64,
     seen_hard_links: Vec<Mutex<HashSet<FileIdentity>>>,
     top_files: Mutex<Vec<FileSummary>>,
     top_file_floor: AtomicU64,
@@ -65,7 +67,7 @@ pub fn scan_recursive(path: impl AsRef<Path>, options: &ScanOptions) -> Result<S
     let root_dev = device_id(&metadata);
     let state = ScanState::new(options.clone(), root_dev);
     let _progress_guard = ProgressGuard::new(state.options.progress.clone());
-    state.increment_entries(1);
+    state.increment_entries(1)?;
 
     let mut root = if state.options.fast && metadata.is_dir() && !metadata.file_type().is_symlink()
     {
@@ -104,7 +106,7 @@ pub fn scan_current_level(
     let root_dev = device_id(&metadata);
     let state = ScanState::new(options.clone(), root_dev);
     let _progress_guard = ProgressGuard::new(state.options.progress.clone());
-    state.increment_entries(1);
+    state.increment_entries(1)?;
     state.increment_dirs(1);
 
     let mut root = if state.options.fast {
@@ -145,8 +147,10 @@ impl ScanState {
         Self {
             options,
             root_dev,
+            started_at: Instant::now(),
             shared: Arc::new(SharedScanState {
                 errors: Mutex::new(Vec::new()),
+                entries_seen: AtomicU64::new(0),
                 seen_hard_links: (0..HARD_LINK_SHARDS)
                     .map(|_| Mutex::new(HashSet::new()))
                     .collect(),
@@ -165,13 +169,35 @@ impl ScanState {
         {
             return Err(ScannerError::Cancelled.into());
         }
+        if self
+            .options
+            .budget
+            .max_duration
+            .is_some_and(|max_duration| self.started_at.elapsed() > max_duration)
+        {
+            return Err(ScannerError::ResourceLimitReached("max_duration").into());
+        }
         Ok(())
     }
 
-    fn increment_entries(&self, count: u64) {
+    fn increment_entries(&self, count: u64) -> Result<()> {
+        let entries_seen = self
+            .shared
+            .entries_seen
+            .fetch_add(count, Ordering::Relaxed)
+            .saturating_add(count);
         if let Some(progress) = &self.options.progress {
             progress.increment_entries(count);
         }
+        if self
+            .options
+            .budget
+            .max_entries
+            .is_some_and(|max_entries| entries_seen > max_entries)
+        {
+            return Err(ScannerError::ResourceLimitReached("max_entries").into());
+        }
+        Ok(())
     }
 
     fn increment_files(&self, count: u64) {
@@ -488,7 +514,7 @@ fn read_children_into(
             }
         };
 
-        state.increment_entries(1);
+        state.increment_entries(1)?;
         if state.should_skip_cross_fs(&metadata) {
             let child_path = entry.path();
             let record = state.record_error(
@@ -582,7 +608,7 @@ fn read_children_fast_into(
             }
         };
 
-        state.increment_entries(1);
+        state.increment_entries(1)?;
         if file_type.is_dir() && !file_type.is_symlink() {
             dir_children.push(entry.path());
         } else if file_type.is_symlink() {
@@ -666,7 +692,7 @@ fn read_children_fast_bulk_into(
             continue;
         }
 
-        state.increment_entries(1);
+        state.increment_entries(1)?;
         match entry.kind {
             BulkEntryKind::Dir => dir_children.push(entry.path),
             BulkEntryKind::Symlink => {
@@ -901,7 +927,7 @@ fn scan_unretained_dir_fast(path: &Path, state: &ScanState) -> Result<DirTotals>
             }
         };
 
-        state.increment_entries(1);
+        state.increment_entries(1)?;
         if file_type.is_dir() && !file_type.is_symlink() {
             dir_children.push(entry.path());
         } else if file_type.is_symlink() {
@@ -962,7 +988,7 @@ fn scan_unretained_dir_fast_bulk_into(
             continue;
         }
 
-        state.increment_entries(1);
+        state.increment_entries(1)?;
         match entry.kind {
             BulkEntryKind::Dir => dir_children.push(entry.path),
             BulkEntryKind::Symlink => add_leaf_to_totals(totals, 0, EntryCounts::symlink()),
@@ -1006,7 +1032,7 @@ fn scan_unretained_dir_fast_bulk_aggregate_into(
         let record = state.record_io_error(error.path, &error.error);
         totals.errors.push(record);
     }
-    state.increment_entries(aggregate.entries_seen);
+    state.increment_entries(aggregate.entries_seen)?;
     totals.used_bytes = totals.used_bytes.saturating_add(aggregate.used_bytes);
     totals.file_count = totals.file_count.saturating_add(aggregate.file_count);
     totals.counts.saturating_add(aggregate.counts);

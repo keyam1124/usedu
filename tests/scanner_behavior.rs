@@ -4,10 +4,10 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use usedu::scanner::{
-    allocated_bytes, scan_current_level, scan_recursive, EntrySummary, ScanCancellation,
-    ScanOptions, ScanProgress, ScannerError,
+    allocated_bytes, scan_current_level, scan_recursive, EntrySummary, ScanBudget,
+    ScanCancellation, ScanOptions, ScanProgress, ScannerError,
 };
 
 #[test]
@@ -310,6 +310,47 @@ fn cancellation_stops_scan() {
     assert!(matches!(
         error.downcast_ref::<ScannerError>(),
         Some(ScannerError::Cancelled)
+    ));
+}
+
+#[test]
+fn scan_budget_stops_after_max_entries() {
+    let fixture = Fixture::new("budget-max-entries");
+    write_file(&fixture.path("a.txt"), b"a");
+    write_file(&fixture.path("b.txt"), b"b");
+    let options = ScanOptions {
+        budget: ScanBudget {
+            max_entries: Some(1),
+            max_duration: None,
+        },
+        ..Default::default()
+    };
+
+    let error = scan_recursive(fixture.root(), &options).unwrap_err();
+
+    assert!(matches!(
+        error.downcast_ref::<ScannerError>(),
+        Some(ScannerError::ResourceLimitReached("max_entries"))
+    ));
+}
+
+#[test]
+fn scan_budget_stops_after_max_duration() {
+    let fixture = Fixture::new("budget-max-duration");
+    write_file(&fixture.path("a.txt"), b"a");
+    let options = ScanOptions {
+        budget: ScanBudget {
+            max_entries: None,
+            max_duration: Some(Duration::from_nanos(0)),
+        },
+        ..Default::default()
+    };
+
+    let error = scan_recursive(fixture.root(), &options).unwrap_err();
+
+    assert!(matches!(
+        error.downcast_ref::<ScannerError>(),
+        Some(ScannerError::ResourceLimitReached("max_duration"))
     ));
 }
 

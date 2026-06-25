@@ -28,6 +28,8 @@ input:
 - `sort`: `used`、`name`、`files`、`dirs`
 - `fast`: approximate fast scanning を使う
 - `crossFileSystems`: mounted filesystem を含める
+- `maxScanEntries`: この entry 数を超えたら traversal を止める
+- `maxScanDurationMs`: この duration を超えたら traversal を止める
 - `maxOutputEntries`: returned entries の上限
 - `redactPaths`: display field を伏せる
 

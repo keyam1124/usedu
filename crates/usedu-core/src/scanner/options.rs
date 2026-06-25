@@ -1,4 +1,5 @@
 use super::progress::{ScanCancellation, ScanProgress};
+use std::time::Duration;
 
 const DEFAULT_JOBS_PER_LOGICAL_CPU: usize = 8;
 const MAX_DEFAULT_JOBS: usize = 80;
@@ -14,6 +15,13 @@ pub struct ScanOptions {
     pub fast: bool,
     pub progress: Option<ScanProgress>,
     pub cancellation: Option<ScanCancellation>,
+    pub budget: ScanBudget,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScanBudget {
+    pub max_entries: Option<u64>,
+    pub max_duration: Option<Duration>,
 }
 
 impl Default for ScanOptions {
@@ -28,6 +36,7 @@ impl Default for ScanOptions {
             fast: false,
             progress: None,
             cancellation: None,
+            budget: ScanBudget::default(),
         }
     }
 }

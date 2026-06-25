@@ -6,4 +6,6 @@ pub enum ScannerError {
     NotDirectory(PathBuf),
     #[error("scan cancelled")]
     Cancelled,
+    #[error("scan resource limit reached: {0}")]
+    ResourceLimitReached(&'static str),
 }

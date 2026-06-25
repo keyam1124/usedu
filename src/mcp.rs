@@ -2,7 +2,7 @@ use crate::protocol::{
     build_scan_envelope, diff_snapshots, EntryDto, EnvelopeMode, EnvelopeOptions, ScanEnvelope,
     SCAN_SCHEMA_VERSION,
 };
-use crate::scanner::{scan_recursive, ScanOptions, SortKey};
+use crate::scanner::{scan_recursive, ScanBudget, ScanOptions, SortKey};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -154,8 +154,10 @@ impl McpServer {
                             "sort": { "enum": ["used", "name", "files", "dirs"], "default": "used" },
                             "fast": { "type": "boolean", "default": false },
                             "crossFileSystems": { "type": "boolean", "default": false },
-                            "maxOutputEntries": { "type": "integer", "minimum": 0 }
-                            , "redactPaths": { "type": "boolean", "default": false }
+                            "maxScanEntries": { "type": "integer", "minimum": 1 },
+                            "maxScanDurationMs": { "type": "integer", "minimum": 1 },
+                            "maxOutputEntries": { "type": "integer", "minimum": 0 },
+                            "redactPaths": { "type": "boolean", "default": false }
                         }
                     })
                 ),
@@ -266,6 +268,9 @@ impl McpServer {
         let fast = optional_bool(&arguments, "fast").unwrap_or(false);
         let cross_file_systems = optional_bool(&arguments, "crossFileSystems").unwrap_or(false);
         let sort_key = optional_sort_key(&arguments)?.unwrap_or(SortKey::Used);
+        let max_scan_entries = optional_u64(&arguments, "maxScanEntries")?;
+        let max_scan_duration =
+            optional_u64(&arguments, "maxScanDurationMs")?.map(Duration::from_millis);
         let max_output_entries = optional_usize(&arguments, "maxOutputEntries")?;
         let redact_paths = optional_bool(&arguments, "redactPaths").unwrap_or(false);
 
@@ -276,6 +281,10 @@ impl McpServer {
             retained_tree_depth: depth,
             retain_root_children: true,
             fast,
+            budget: ScanBudget {
+                max_entries: max_scan_entries,
+                max_duration: max_scan_duration,
+            },
             ..Default::default()
         };
 

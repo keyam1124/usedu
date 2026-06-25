@@ -28,6 +28,8 @@ Input:
 - `sort`: `used`, `name`, `files`, or `dirs`.
 - `fast`: use approximate fast scanning.
 - `crossFileSystems`: include mounted filesystems.
+- `maxScanEntries`: stop traversal after this many entries.
+- `maxScanDurationMs`: stop traversal after this duration.
 - `maxOutputEntries`: cap returned entries.
 - `redactPaths`: redact display fields.
 
