@@ -1,0 +1,65 @@
+{
+  "path": "/fixture",
+  "usedBytes": 32768,
+  "fileCount": 7,
+  "dirCount": 2,
+  "errorsCount": 2,
+  "metrics": {
+    "elapsedMs": 1200,
+    "entriesPerSecond": 8
+  },
+  "children": [
+    {
+      "kind": "dir",
+      "name": "alpha",
+      "path": "/fixture/alpha",
+      "usedBytes": 16384,
+      "fileCount": 3,
+      "dirCount": 1
+    },
+    {
+      "kind": "file",
+      "name": ".hidden",
+      "path": "/fixture/.hidden",
+      "usedBytes": 4096,
+      "fileCount": 1,
+      "dirCount": 0
+    },
+    {
+      "kind": "symlink",
+      "name": "link\nname",
+      "path": "/fixture/link\nname",
+      "usedBytes": 512,
+      "fileCount": 1,
+      "dirCount": 0
+    },
+    {
+      "kind": "other",
+      "name": "control\tname",
+      "path": "/fixture/control\tname",
+      "usedBytes": 256,
+      "fileCount": 1,
+      "dirCount": 0
+    },
+    {
+      "kind": "file",
+      "name": "hard-link-alias",
+      "path": "/fixture/hard-link-alias",
+      "usedBytes": 4096,
+      "fileCount": 1,
+      "dirCount": 0
+    }
+  ],
+  "errors": [
+    {
+      "path": "/fixture/locked",
+      "kind": "PermissionDenied",
+      "message": "Permission denied (os error 13)"
+    },
+    {
+      "path": "/fixture/race",
+      "kind": "NotFound",
+      "message": "No such file or directory (os error 2)"
+    }
+  ]
+}
