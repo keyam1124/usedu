@@ -22,16 +22,16 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests
-        run: cargo test
+        run: cargo test --workspace
 
       - name: JSON schema parses
         run: python3 -m json.tool schemas/usedu-json-v2.schema.json >/dev/null
 
       - name: Build x86_64
-        run: cargo build --target x86_64-apple-darwin
+        run: cargo build --workspace --target x86_64-apple-darwin
 
       - name: Build arm64
-        run: cargo build --target aarch64-apple-darwin
+        run: cargo build --workspace --target aarch64-apple-darwin

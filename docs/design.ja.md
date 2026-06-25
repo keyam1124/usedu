@@ -82,8 +82,12 @@ TUI は一階層のブラウザです。
 
 ## スキャナーの構造
 
-スキャナーは、ターミナル出力や TUI 描画から独立させます。
-レポートモードと TUI モードは、同じスキャナーのロジックを共有します。
+スキャナーは `usedu-core` crate に分離します。
+ターミナル出力や TUI 描画には依存しません。
+report mode、TUI mode、snapshot output、MCP tool は、同じ scanner logic を共有します。
+
+versioned machine-readable DTO は `usedu-protocol` crate に置きます。
+CLI、TUI、MCP adapter は root の `usedu` crate に置きます。
 
 スキャナーは `PathBuf` と `OsString` を扱います。
 パスが妥当な UTF-8 であるとは仮定しません。

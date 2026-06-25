@@ -5,15 +5,21 @@ edition = "2021"
 description = "A read-only macOS disk usage CLI/TUI that reports allocated file-system size."
 license = "MIT"
 
+[workspace]
+members = [
+    ".",
+    "crates/usedu-core",
+    "crates/usedu-protocol",
+]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 comfy-table = "7"
 crossterm = "0.28"
 indicatif = "0.17"
-libc = "0.2"
 ratatui = "0.29"
-rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+usedu-core = { path = "crates/usedu-core" }
+usedu-protocol = { path = "crates/usedu-protocol" }

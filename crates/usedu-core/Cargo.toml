@@ -1,0 +1,12 @@
+[package]
+name = "usedu-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core scanner and filesystem accounting for usedu."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+rayon = "1"
+thiserror = "1"

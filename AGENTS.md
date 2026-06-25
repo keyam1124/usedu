@@ -16,9 +16,9 @@ Use these commands once `Cargo.toml` exists:
 - `cargo build`: compile the project.
 - `cargo run -- report [PATH]`: run static report mode, e.g. `cargo run -- report ~/Library --depth 2`.
 - `cargo run -- [PATH]`: run TUI mode.
-- `cargo test`: run tests.
+- `cargo test --workspace`: run tests.
 - `cargo fmt`: format Rust code.
-- `cargo clippy --all-targets --all-features`: lint all targets.
+- `cargo clippy --workspace --all-targets --all-features`: lint all targets.
 
 Do not add Swift, GUI, daemon, or cleanup/delete behavior.
 

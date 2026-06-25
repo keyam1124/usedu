@@ -81,10 +81,14 @@ This model keeps the UI scannable while preserving useful disk-usage totals.
 
 ## Scanner Architecture
 
-Scanner code should be independent from terminal output and TUI rendering.
-Both report mode and TUI mode should share scanner logic.
+Scanner code is isolated in the `usedu-core` crate.
+It is independent from terminal output and TUI rendering.
+Report mode, TUI mode, snapshot output, and MCP tools share scanner logic.
 
-The scanner should work with `PathBuf` and `OsString`.
+Versioned machine-readable DTOs live in the `usedu-protocol` crate.
+The CLI, TUI, and MCP adapter live in the root `usedu` crate.
+
+The scanner works with `PathBuf` and `OsString`.
 It should not assume paths are valid UTF-8.
 Lossy string conversion belongs at the final display or serialization layer.
 

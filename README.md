@@ -171,7 +171,7 @@ The product contract is recorded in [docs/adr/0001-product-contract.md](docs/adr
 
 ```bash
 cargo build
-cargo test
+cargo test --workspace
 cargo fmt
-cargo clippy --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features
 ```

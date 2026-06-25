@@ -1,12 +1,12 @@
-use crate::scanner::{
-    DirSummary, EntryCounts as ScannerCounts, EntrySummary, FileSummary, ScanErrorRecord,
-    ScanResult, SortKey,
-};
-use crate::util::path::display_path;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
+use usedu_core::scanner::{
+    DirSummary, EntryCounts as ScannerCounts, EntrySummary, FileSummary, ScanErrorRecord,
+    ScanResult, SortKey,
+};
+use usedu_core::util::path::display_path;
 
 pub const SCAN_SCHEMA_VERSION: &str = "usedu.scan.v2";
 pub const DIFF_SCHEMA_VERSION: &str = "usedu.diff.v1";
@@ -359,7 +359,7 @@ pub fn render_ndjson(scan: &ScanResult, options: &EnvelopeOptions) -> anyhow::Re
 }
 
 pub fn json_v2_schema() -> &'static str {
-    include_str!("../../schemas/usedu-json-v2.schema.json")
+    include_str!("../../../schemas/usedu-json-v2.schema.json")
 }
 
 pub fn diff_snapshots(before: &ScanEnvelope, after: &ScanEnvelope) -> DiffEnvelope {

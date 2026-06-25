@@ -171,7 +171,7 @@ machine-readable JSON v2 では、regular file、directory、symlink、other の
 
 ```bash
 cargo build
-cargo test
+cargo test --workspace
 cargo fmt
-cargo clippy --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features
 ```

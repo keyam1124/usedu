@@ -868,12 +868,31 @@ dependencies = [
  "comfy-table",
  "crossterm 0.28.1",
  "indicatif",
- "libc",
  "ratatui",
- "rayon",
  "serde",
  "serde_json",
+ "usedu-core",
+ "usedu-protocol",
+]
+
+[[package]]
+name = "usedu-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rayon",
  "thiserror",
+]
+
+[[package]]
+name = "usedu-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "usedu-core",
 ]
 
 [[package]]
