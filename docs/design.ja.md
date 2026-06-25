@@ -2,127 +2,158 @@
 
 [English](design.md) | [日本語](design.ja.md)
 
-この文書は、`usedu` の変更後も維持する設計上の制約を記録します。
-過去の実装仕様ではありません。
+この文書は、`usedu` の変更後も維持する product / implementation constraint を記録します。過去の実装履歴ではありません。
 
 関連文書:
 
 - [ADR 0001: プロダクト契約](adr/0001-product-contract.ja.md)
 - [ファイルシステム意味論](semantics.ja.md)
-- [JSON 契約修正計画](json-contract.ja.md)
-- [agent security boundary](agent-security.ja.md)
-- [MCP tool contract](mcp-tools.ja.md)
+- [JSON Machine Interface](json-contract.ja.md)
+- [Agent Security Boundary](agent-security.ja.md)
+- [MCP の利用フローと tool リファレンス](mcp-tools.ja.md)
 
 ## プロダクト境界
 
-`usedu` は、macOS のターミナルで使う読み取り専用のディスク使用量アナライザーです。
-ファイルシステム上の割り当て済み容量がどこで使われているかを調べます。
+`usedu` は、macOS 向けの読み取り専用 disk allocation inspection tool です。
+filesystem 上の allocated space がどこに帰属しているかを調べます。
 
-`usedu` は、ファイルの削除、移動、変更、隔離、クリーンアップ候補の提案を行いません。
-GUI、バックグラウンドデーモン、重複ファイル検出、リアルタイム監視、ツリーマップ、論理サイズ分析も対象外です。
+`usedu` は、ファイルの削除、移動、変更、隔離、cleanup action の推薦を行いません。
+GUI、background daemon、duplicate finder、real-time monitor、treemap、logical-size analyzer も対象外です。
+
+CLI、TUI、JSON、snapshot、diff、MCP のすべてで同じ product boundary を維持します。
 
 ## コマンドモデル
 
-既定のコマンドは、対話型 TUI を開きます。
+既定の command は interactive TUI を開きます。
 
 ```bash
 usedu [PATH]
 ```
 
-`PATH` を省略した場合、TUI は現在のディレクトリを開きます。
-`usedu` は `/` を暗黙の既定値にしません。
-ルートボリュームを走査するには、対象パスを明示します。
+`PATH` を省略した場合は現在のディレクトリを開きます。
+`/` を暗黙の既定値にはせず、root volume を走査するには path を明示します。
 
-静的レポートは `report` サブコマンドで実行します。
+static report と machine-readable report format は `report` から利用します。
 
 ```bash
 usedu report [PATH]
+usedu report [PATH] --format json-v2
+usedu report [PATH] --format ndjson
 ```
+
+persistent snapshot は stdout に出力し、file への保存は caller の責任とします。
+
+```bash
+usedu snapshot [PATH] > scan.usedu.json
+usedu compare before.usedu.json after.usedu.json
+```
+
+agent interface は foreground stdio adapter です。
+
+```bash
+usedu mcp --stdio --allow-root [PATH]
+```
+
+network transport と default daemon behavior は product boundary 外です。
 
 ## サイズの扱い
 
-`usedu` は、ファイルシステム上の割り当て済みサイズだけを報告します。
-表示ラベルは常に `Used` です。
-論理サイズモードやサイズモード切り替えはありません。
+`usedu` は filesystem 上の allocated size だけを報告します。
+human output の label は常に `Used` です。
+logical-size mode や size-mode switch はありません。
 
-厳密な走査では、`symlink_metadata` と Unix の割り当て済みブロック数を使います。
+strict scan は `symlink_metadata` と Unix allocated block count を使います。
 
 ```rust
 metadata.blocks().saturating_mul(512)
 ```
 
-ディレクトリの合計には、ディレクトリ自身の割り当て済みサイズと、子孫のファイルおよびディレクトリの割り当て済みサイズを含めます。
+directory total には directory 自身の allocated bytes と、帰属する descendant allocation を含めます。
 
-APFS のクローン、スナップショット、圧縮、スパースファイル、File Provider の挙動によって、実際に解放できる容量と表示上の `Used` は一致しないことがあります。
+APFS clone、snapshot、compression、sparse file、File Provider の挙動により、reclaimable space と表示上の `Used` は一致しないことがあります。
+
+machine interface は human label に依存せず、effective accounting semantics を出力します。
 
 ## ファイルシステム上の規則
 
-シンボリックリンクはリンク自身のエントリとして数えますが、リンク先はたどりません。
-隠しファイルと隠しディレクトリも含めます。
-`.app` や `.photoslibrary` のようなパッケージディレクトリは、通常のディレクトリとして扱います。
+symbolic link は link entry として数えますが、link 先はたどりません。
+hidden file と hidden directory も含めます。
+`.app` や `.photoslibrary` は通常の directory として扱います。
 
-権限エラーは記録しますが、走査全体を中断しません。
-詳細なエラー出力は、利用者が明示的に要求した場合だけ表示します。
+permission error は記録しますが、scan 全体を中断しません。
+詳細 issue は report mode では任意、MCP では output limit の範囲で session に保持します。
 
-既定では、指定されたパスのルートファイルシステム内だけを走査します。
-別デバイス上のマウント済みファイルシステムを含めるには、`--cross-file-systems` を使います。
+strict mode は、cross-filesystem traversal を明示しない限り requested root filesystem 内にとどまります。
+fast mode は approximate であり、strict mode なら skip する mounted filesystem を走査する場合があります。
 
-複数のハードリンクを持つ通常ファイルは、実用上可能な範囲でデバイスと inode ごとに一度だけ数えます。
+strict mode は同じ device/inode の regular file を可能な範囲で重複排除します。strict entry traversal は deterministic で、first-seen hard-link attribution を再現可能にします。
 
-## TUI の走査モデル
+## TUI の interaction model
 
-TUI は一階層のブラウザです。
-現在のディレクトリでは、直下の子だけを表示します。
-ただし、直下の子ディレクトリには、その配下を再帰的に集計した `Used` の合計を表示します。
+TUI は一階層の browser です。
+現在の directory では direct children だけを表示します。
+ただし direct child directory には、その配下を再帰的に集計した `Used` total を表示します。
 
-たとえば `~/Library` を表示しているとき、TUI は `Application Support`、`Containers`、`Caches` などを表示できます。
-利用者が `Application Support` を開くまで、`Application Support/A` のような孫は表示しません。
+たとえば `~/Library` では `Application Support`、`Containers`、`Caches` を表示できます。利用者が `Application Support` を開くまで、`Application Support/A` のような grandchild は表示しません。
 
-このモデルにより、画面の見通しを保ちながら、ディスク使用量として有用な合計を表示します。
+この model により、画面の見通しを保ちながら recursive total を提示します。
 
-## スキャナーの構造
+## MCP の interaction model
 
-スキャナーは `usedu-core` crate に分離します。
-ターミナル出力や TUI 描画には依存しません。
-report mode、TUI mode、snapshot output、MCP tool は、同じ scanner logic を共有します。
-`ScanEngine` は `ScanRequest` を受け取り、`ScanOutcome` を返します。
-collector は summary、top-file view、将来の protocol-specific view を outcome から作り、scanner に terminal concern を持ち込みません。
+MCP server は foreground、process-local の stdio adapter です。
 
-versioned machine-readable DTO は `usedu-protocol` crate に置きます。
-CLI、TUI、MCP adapter は root の `usedu` crate に置きます。
+- allowed roots は process 起動時に設定
+- `usedu_scan` は in-memory session を作成し、`scanId` を返す
+- follow-up tool は stored scan envelope を参照し、自動的には再走査しない
+- retained depth、file inclusion、output limit が follow-up query で見える範囲を決める
+- session 数には上限があり、inactivity TTL で期限切れとなり、process 終了時に消失する
+- background scan は progress と cooperative cancellation を公開する
 
-スキャナーは `PathBuf` と `OsString` を扱います。
-パスが妥当な UTF-8 であるとは仮定しません。
-損失を伴う文字列変換は、最終的な表示やシリアライズの層で行います。
+MCP は agent が scan result を inspection、navigation、explanation、comparison するための interface です。cleanup capability は追加しません。
 
-スキャナーは、すべてのファイルを保持済みツリーノードとして保存しません。
-必要に応じて、ディレクトリ要約、レポートに必要なファイル、上位ファイル候補を保持します。
+利用者向けの workflow と現在の制約は [MCP の利用フローと tool リファレンス](mcp-tools.ja.md) に記録します。
+
+## Scanner architecture
+
+scanner code は `usedu-core` crate に分離し、terminal rendering と MCP transport に依存しません。
+
+report mode、TUI mode、snapshot、MCP tool は同じ scanner logic を共有します。
+`ScanEngine` は `ScanRequest` を受け取り `ScanOutcome` を返します。collector は scanner に presentation concern を持ち込まず、summary と retained view を作ります。
+
+versioned machine-readable DTO は `usedu-protocol` に置きます。
+root `usedu` crate は CLI、TUI、output、snapshot、diff、MCP adapter を提供します。
+
+scanner は `PathBuf` と `OsString` を使い、path が valid UTF-8 であると仮定しません。lossy conversion は display / serialization boundary だけで行います。可逆的な machine identity は `pathRef` の raw Unix path bytes を使います。
+
+scanner は全 file を tree node として保持しません。request に応じて directory summary、retained tree entry、issue record、top-file candidate を保持します。
 
 ## 性能方針
 
-走査ではメタデータだけを読みます。
-ファイル内容は読みません。
+scan は metadata だけを読み、ファイル内容は読みません。
 
-進捗出力は間引きます。
-スキャナーはファイルごとの行を出力せず、走査中に表示用文字列を組み立てません。
-ソートは走査中に繰り返さず、出力または画面描画の直前に行います。
+progress output は throttle します。
+scanner は file ごとに出力せず、traversal 中に display string を組み立てません。
+sort は deterministic collection または presentation boundary で行い、scan 中に場当たり的に繰り返しません。
 
-並列処理には、上限のあるワーカープールを使います。
-並列処理の単位はディレクトリサブツリーです。
-個々のファイルメタデータ読み取りは、並列処理の単位として細かすぎます。
+parallelism は bounded worker resource を使います。fast mode は directory subtree を parallelize できますが、strict mode は accounting consistency のため deterministic traversal を維持します。
 
-## fast モード
+long-lived adapter は session と worker resource を bounded に保ちます。
 
-fast モードは、厳密な集計より走査時間を優先します。
-macOS では、一括メタデータ API を使って、エントリごとのファイルシステム呼び出しを減らすことがあります。
-保持しないサブツリーでは、各エントリの表示ノードを作らずに合計だけを集計できます。
+## Fast mode
 
-fast モードでは、ディレクトリ自身の割り当て済みサイズを省略したり、ハードリンクされたファイルを重複して数えたり、厳密モードならスキップするマウント済みファイルシステムをまたいだりすることがあります。
-概算で足りる場合に使います。
+fast mode は strict accounting より scan latency を優先します。
+macOS では bulk metadata API を使い、entry ごとの filesystem call を減らせます。
+unretained subtree では、各 display node を作らず合計だけを集計できます。
 
-## エラーの扱い
+fast mode は directory-own bytes を省略し、hard-linked file を重複計上し、strict mode なら skip する mounted filesystem を traversal する場合があります。
+machine output は fast mode を単なる performance flag ではなく approximate semantics として報告します。
 
-権限エラーやエントリ単位の読み取り失敗は、部分的な走査エラーです。
-件数や任意の詳細表示では報告しますが、それだけでコマンド全体を失敗扱いにはしません。
+## Error behavior
 
-CLI、設定、実行時の致命的なエラーでは、非ゼロの終了ステータスを返します。
+permission error と entry 単位の failure は partial scan issue です。
+count と optional structured detail には表しますが、それだけで command または MCP call 全体を必ず失敗にはしません。
+
+traversal budget も structured resource-limit issue を持つ partial envelope を生成します。
+output limit は `limitReached` envelope を生成します。
+
+fatal CLI、configuration、transport、runtime error では、non-zero command status または JSON-RPC error を返します。
