@@ -1,31 +1,71 @@
-# MCP stdio interface
+# Use `usedu` from an AI agent over MCP
 
 [English](mcp-tools.md) | [日本語](mcp-tools.ja.md)
 
-`usedu mcp --stdio` runs a foreground, read-only MCP server over standard input and standard output.
-It stores scan results as in-memory sessions so an MCP client can inspect a completed result without rescanning the filesystem for every query.
+`usedu mcp --stdio` lets an MCP client, such as an AI agent, inspect disk usage under explicitly allowed directories through a read-only interface.
 
-The current implementation:
+The main value is not merely that an agent can launch a scan. A scan result is kept as an in-memory session, and the agent can ask follow-up questions such as “show the largest areas,” “list this directory's children,” “explain why the result is incomplete,” or “compare two scans” without rescanning for every query.
 
-- supports stdio only;
-- advertises MCP protocol version `2024-11-05`;
-- accepts one JSON-RPC message per line and writes one response per line;
-- reserves stdout for protocol messages and stderr for diagnostics;
-- keeps all sessions in memory, so they disappear when the process exits;
-- returns scan envelopes with schema version `usedu.scan.v2` and diff envelopes with schema version `usedu.diff.v1`.
+## What users can accomplish
 
-`usedu` remains an inspection tool. The MCP server does not delete, move, quarantine, or recommend files for removal.
+| User goal | What the agent does | Main tools |
+| --- | --- | --- |
+| Understand which directories use the most space | Scan an allowed root and rank retained entries by allocated size | `usedu_scan`, `usedu_top_entries` |
+| Find large files | Include files in the scan and read `envelope.topFiles`, collected across the traversal | `usedu_scan` |
+| Drill into a directory | Page through direct children stored in the scan result | `usedu_list_children` |
+| Explain an incomplete result | Retrieve permission errors, filesystem-boundary skips, and traversal-budget issues | `usedu_get_issues` |
+| Observe or stop a long scan | Start a background scan, poll progress, and request cancellation | `usedu_scan_status`, `usedu_cancel_scan` |
+| Find what grew or shrank between two points | Compare two sessions held by the same server process | `usedu_compare` |
+| Reduce display-path exposure | Redact display names and paths in the result | `redactPaths: true` |
 
-## Mental model
+Example requests a user could give an agent include:
+
+- “Find the ten directories using the most allocated space under `~/Library`.”
+- “Find the largest regular files under this project.”
+- “Show the direct children of `Application Support`, ordered by size.”
+- “Explain why this scan is partial.”
+- “Run this scan in the background and stop it if it takes too long.”
+- “Scan this directory before and after the operation and show what grew.”
+
+## What MCP does not enable
+
+Using MCP does not change the `usedu` product boundary.
+
+- It does not delete, move, mutate, or quarantine files.
+- It does not certify that an entry is safe to delete.
+- It does not recommend cleanup actions.
+- It does not read file contents.
+- It cannot scan outside the startup allowlist.
+- Reported `Used` bytes are not guaranteed reclaimable bytes.
+- It is not a real-time monitor or a background daemon.
+
+MCP sessions are memory-only and disappear when the server exits. For comparisons that must survive process restarts, use CLI snapshots instead:
+
+```bash
+usedu snapshot PATH > before.usedu.json
+usedu snapshot PATH > after.usedu.json
+usedu compare before.usedu.json after.usedu.json
+```
+
+## How the interface works
 
 ```text
 1. Configure allowed roots when the server starts
 2. Call usedu_scan and receive a scanId
-3. Use the scanId to query the stored result
+3. Use that scanId to query the stored result
 4. Close the session when it is no longer needed
 ```
 
-`usedu_list_children`, `usedu_top_entries`, `usedu_get_issues`, and `usedu_compare` read stored scan envelopes. They do not rescan the filesystem.
+Follow-up query tools read the stored envelope. They do not rescan the filesystem.
+
+```text
+envelope.root       the scan root
+envelope.entries    entries retained by depth and filters
+envelope.topFiles   largest regular files collected across traversal
+envelope.issues     filesystem and traversal-budget issue details
+```
+
+The original `depth`, `includeFiles`, and output limits determine what later queries can see. Data omitted or truncated from the envelope cannot be recovered by a later tool call.
 
 ## Start the server
 
@@ -38,438 +78,318 @@ usedu mcp --stdio \
 
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `--stdio` | required | Starts the stdio server. No HTTP transport is implemented. |
-| `--allow-root PATH` | current directory | May be repeated. Only existing paths under a canonicalized allowed root can be scanned. |
-| `--max-sessions N` | `8` | Maximum number of sessions retained by the process. Values below `1` are treated as `1`. |
+| `--stdio` | required | Starts the stdio MCP server. HTTP transport is not implemented. |
+| `--allow-root PATH` | current directory | May be repeated. Only existing paths that canonicalize under an allowed root can be scanned. |
+| `--max-sessions N` | `8` | Maximum sessions retained by the process. Values below `1` are treated as `1`. |
 
-Allowed roots are fixed when the server starts. Tool arguments cannot widen the allowlist, and the current implementation does not import roots dynamically from the MCP client.
+Allowed roots are fixed at startup. The current implementation does not dynamically import MCP client `roots`, and tool arguments cannot widen the allowlist.
 
-Every allowed root and requested scan path is canonicalized. A requested path that resolves outside the allowlist, including through a symbolic link, is rejected before traversal. A nonexistent path that cannot be canonicalized is also rejected.
+Allowed roots and requested scan paths are canonicalized. Requests that resolve outside the allowlist, including through symbolic links, are rejected before traversal. Nonexistent paths are also rejected.
 
-See [Agent Security Boundary](agent-security.md) for path identity, redaction, filesystem boundaries, and resource controls.
+## Goal-oriented workflows
 
-## MCP result shape
+### Understand the largest directories
 
-Every successful `tools/call` response contains the tool-specific payload twice:
-
-- `result.structuredContent`: the value machine clients should consume;
-- `result.content[0].text`: the same value serialized as JSON text for compatibility with text-oriented clients.
-
-Abbreviated example:
+Start with enough retained depth to make the directories of interest queryable:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 3,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\"scanId\":\"scan_...\",\"state\":\"complete\",...}"
-      }
-    ],
-    "structuredContent": {
-      "scanId": "scan_...",
-      "state": "complete",
-      "envelope": {
-        "schemaVersion": "usedu.scan.v2",
-        "status": { "state": "complete", "partialReasons": [] }
-      }
-    }
-  }
+  "root": "/Users/example/Library",
+  "depth": 2,
+  "includeFiles": false,
+  "sort": "used"
 }
 ```
 
-Treat `scanId`, `entryId`, and cursors as opaque values. They are implementation identifiers, not durable external IDs. A synchronous `scanId` is derived from the root path and aggregate size/count fields; it is not a globally unique identifier or a complete content hash.
+Then call `usedu_top_entries` with `kind: "directory"` to rank directories across all retained levels.
 
-## Session state and scan status are different
+In the MCP interface, `usedu_scan.top` limits `envelope.topFiles`; it does **not** limit `envelope.entries` or the number of directories. Use `usedu_top_entries.limit` for the directory ranking size.
 
-There are two independent status layers.
+### Find the largest regular files
 
-### MCP session state
+```json
+{
+  "root": "/Users/example/Projects",
+  "depth": 1,
+  "includeFiles": true,
+  "top": 50
+}
+```
 
-The outer `state` describes whether the server-side operation has produced a stored envelope.
+After completion, `envelope.topFiles` contains up to 50 of the largest regular files found across the traversal, independent of the retained tree depth.
 
-| State | Meaning | Envelope available |
+`usedu_top_entries` with `kind: "regularFile"` is a different view: it ranks only regular files already retained in `envelope.entries`.
+
+### Drill into a directory
+
+Pass a parent `entryId` to `usedu_list_children`. The root ID is returned as `envelope.root.entryId`.
+
+```json
+{
+  "scanId": "mcp_scan_...",
+  "entryId": "entry_...",
+  "limit": 50
+}
+```
+
+If the initial scan did not retain enough depth, later calls cannot reconstruct the omitted children. Start a new `usedu_scan` with that directory as `root`, provided it remains inside the startup allowlist.
+
+### Run a long scan in the background
+
+```json
+{
+  "root": "/Users/example/Library",
+  "background": true,
+  "maxScanDurationMs": 60000
+}
+```
+
+The initial response has `state: "running"` and no envelope. Poll `usedu_scan_status`; set `includeEnvelope: true` when the completed result is needed.
+
+Cancellation is cooperative. `usedu_cancel_scan` requests cancellation, so its immediate response may still be `running`. Continue polling until the state changes.
+
+A synchronous scan blocks the stdio request loop, so use `background: true` whenever progress polling or cancellation is required.
+
+### Compare two scans
+
+`usedu_compare` compares two sessions held by the same server process.
+
+Synchronous scan IDs are currently derived from the root path and aggregate size/count values. Two synchronous scans of the same root can therefore reuse the same `scanId` when those aggregate values are unchanged, replacing the earlier session. For a reliable before/after comparison, run both scans with `background: true`, which assigns distinct process-local session IDs.
+
+Use compatible options for both scans, especially:
+
+- `root`
+- `depth`
+- `includeFiles`
+- `dirsOnly`
+- `fast`
+- `crossFileSystems`
+- output limits
+
+If either envelope is partial or `limitReached`, or their accounting semantics differ, the diff is marked `exact: false` and changes become `uncertain`. The current implementation does not automatically reject every effective-option mismatch.
+
+### Explain a partial result
+
+When `envelope.status.state` is `partial` or `limitReached`, inspect:
+
+- `envelope.status.partialReasons`
+- `envelope.issueSummary`
+- `usedu_get_issues`
+
+Issues can include permission errors, entries disappearing during traversal, filesystem-boundary skips, and traversal-budget limits.
+
+## Two different status layers
+
+The outer MCP session `state` and `envelope.status.state` describe different things.
+
+### Session `state`
+
+| Value | Meaning | Envelope |
 | --- | --- | --- |
-| `running` | A background scan is still executing. | No |
-| `complete` | The scan operation finished and a scan envelope is stored. | Yes |
-| `cancelled` | A background scan observed cancellation. | No in the current implementation |
-| `failed` | A background scan ended with a fatal error. | No |
+| `running` | A background scan is still executing | absent |
+| `complete` | The scan operation ended and an envelope is stored | present |
+| `cancelled` | A background scan observed cancellation | absent in the current implementation |
+| `failed` | A background scan ended with a fatal error | absent |
 
-### Scan envelope status
+### `envelope.status.state`
 
-`envelope.status.state` describes the completeness of the filesystem result itself.
-
-| State | Meaning |
+| Value | Meaning |
 | --- | --- |
-| `complete` | No scan issue or output truncation was recorded. |
-| `partial` | An envelope was produced, but filesystem issues or traversal budgets made the result incomplete. |
-| `limitReached` | Output sections were truncated by `maxOutputEntries` or `maxOutputBytes`. |
+| `complete` | No scan issue or output truncation was recorded |
+| `partial` | An envelope exists, but filesystem issues or traversal budgets made it incomplete |
+| `limitReached` | `maxOutputEntries` or `maxOutputBytes` truncated output sections |
 
-Consequently, these are valid combinations:
-
-- session `complete` + envelope `partial` after a permission error or traversal budget;
-- session `complete` + envelope `limitReached` after output truncation;
-- session `cancelled` with no envelope after cancelling a background scan.
-
-Clients should check both layers before treating a result as complete.
-
-## What a scan session stores
-
-A completed session stores one `ScanEnvelope` in memory:
-
-```text
-envelope.root       one root entry
-envelope.entries    flat retained tree entries selected by depth and filters
-envelope.topFiles   largest regular files collected across traversal
-envelope.issues     stored filesystem and budget issue details
-```
-
-The query tools do not rescan the filesystem. They read these stored sections:
-
-| Tool | Stored data used |
-| --- | --- |
-| `usedu_list_children` | `envelope.entries` |
-| `usedu_top_entries` | `envelope.entries` |
-| `usedu_get_issues` | `envelope.issues` |
-| `usedu_compare` | `envelope.root` and `envelope.entries` from both sessions |
-
-This means the original `depth`, `includeFiles`, and output limits determine what later queries can see. Data omitted or truncated from the envelope cannot be recovered by a later tool call.
-
-## Typical workflows
-
-As with a normal MCP connection, call `initialize` first, optionally inspect `tools/list`, and then invoke tools through `tools/call`.
-
-### Synchronous scan
-
-A synchronous call blocks until the scan completes or fails. While it is running, the stdio request loop does not process another input line.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "usedu_scan",
-    "arguments": {
-      "root": "/Users/example/Library",
-      "depth": 2,
-      "includeFiles": true,
-      "top": 30
-    }
-  }
-}
-```
-
-On success, `structuredContent.state` is `complete` and `structuredContent.envelope` is present. This outer state only means that an envelope exists; inspect `envelope.status` for partial or truncated results.
-
-The returned `scanId` can then be used with `usedu_list_children`, `usedu_top_entries`, `usedu_get_issues`, `usedu_compare`, and `usedu_close_scan`.
-
-### Background scan
-
-Set `background: true` to return immediately:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "usedu_scan",
-    "arguments": {
-      "root": "/Users/example/Library",
-      "background": true
-    }
-  }
-}
-```
-
-The initial result contains `state: "running"` and no envelope. Poll `usedu_scan_status`; set `includeEnvelope: true` when the completed envelope is needed.
-
-Cancellation is cooperative. `usedu_cancel_scan` only requests cancellation, so its immediate response may still report `state: "running"`. Continue polling until the state changes.
+A session can therefore be `complete` while its envelope is `partial` or `limitReached`. Clients should inspect both layers.
 
 ## Tool overview
 
-| Tool | Purpose |
+| Tool | What it provides |
 | --- | --- |
-| `usedu_scan` | Run a synchronous or background scan and create a session. |
-| `usedu_scan_status` | Read background progress and optionally retrieve the completed envelope. |
-| `usedu_cancel_scan` | Request cooperative cancellation of a running scan. |
-| `usedu_list_children` | Page through direct children retained in the envelope. |
-| `usedu_top_entries` | Rank retained entries across the stored tree. |
-| `usedu_get_issues` | Page through stored issue details. |
-| `usedu_compare` | Compare the root and retained entries of two sessions. |
-| `usedu_close_scan` | Remove a session and cancel it if still running. |
+| `usedu_scan` | Run a synchronous or background scan and create a session |
+| `usedu_scan_status` | Read background progress and optionally retrieve the completed envelope |
+| `usedu_cancel_scan` | Request cooperative cancellation of a running scan |
+| `usedu_list_children` | Page through direct children retained in the envelope |
+| `usedu_top_entries` | Rank entries retained across the stored tree |
+| `usedu_get_issues` | Page through stored issue details |
+| `usedu_compare` | Compare two stored scan envelopes |
+| `usedu_close_scan` | Remove a session and cancel it if still running |
 
 ## Tool reference
 
 ### `usedu_scan`
 
-Scans one allowed path and creates a session.
-
-#### Input
-
 | Field | Type / default | Actual behavior |
 | --- | --- | --- |
-| `root` | string, required | Existing path to scan. It is canonicalized and must resolve inside the startup allowlist. |
-| `depth` | integer `>= 0`, default `1` | Retained result depth, not traversal depth. `0` returns only the root; `1` includes direct children. Descendants are still traversed to aggregate directory totals. |
-| `top` | integer `>= 0`, default `30` | Limits `envelope.topFiles`. In the MCP snapshot-style envelope it does **not** limit `envelope.entries`. |
-| `includeFiles` | boolean, default `false` | Includes file, symlink, and other leaf entries within the retained depth and enables collection of `topFiles`. Without it, `entries` contains directories only. |
-| `dirsOnly` | boolean, default `false` | Filters `entries` to directories. It does not remove `topFiles` when `includeFiles` is also true. |
-| `sort` | `used`, `name`, `files`, or `dirs`; default `used` | Controls ordering while the envelope is built. Query tools have their own ordering rules described below. |
-| `fast` | boolean, default `false` | Uses approximate fast accounting. It can omit directory-own bytes, double-count hard links, and traverse mounted filesystems that strict mode would skip. `envelope.semantics.accuracy` is `approximate`. |
-| `crossFileSystems` | boolean, default `false` | In strict mode, allows traversal into mounted filesystems below the requested root. Fast mode may cross filesystem boundaries even when this is false. |
-| `maxScanEntries` | positive integer, optional | Traversal budget. Exceeding it produces a stored partial envelope with a `RESOURCE_LIMIT_REACHED` issue. |
-| `maxScanDurationMs` | positive integer, optional | Cooperative traversal time budget in milliseconds. It is checked during traversal rather than enforced as a hard preemptive timeout; observing it produces a stored partial envelope. |
-| `maxOutputEntries` | non-negative integer, optional | Truncates the stored `envelope.entries` array and sets envelope status to `limitReached`. |
-| `maxOutputBytes` | non-negative integer, optional | Best-effort serialized-size target. The implementation removes entries first, then top files and issue details, and sets `limitReached`. Mandatory envelope fields can still exceed a very small target. |
-| `redactPaths` | boolean, default `false` | Replaces `displayName` and `displayPath` with `[redacted]`. Reversible `pathRef` values remain present. |
-| `background` | boolean, default `false` | Runs the scan in a worker thread and returns the session before an envelope exists. |
+| `root` | string, required | Existing path that canonicalizes inside the startup allowlist. |
+| `depth` | integer `>= 0`, default `1` | Retained result depth, not traversal depth. `0` keeps only the root; `1` keeps direct children. Descendants are still traversed for directory totals. |
+| `top` | integer `>= 0`, default `30` | Limits `envelope.topFiles`. It does not limit MCP `entries`. |
+| `includeFiles` | boolean, default `false` | Retains regular files, symlinks, and other leaf entries within `depth`, and enables `topFiles` collection. |
+| `dirsOnly` | boolean, default `false` | Filters `entries` to directories. It does not remove `topFiles` when `includeFiles` is true. |
+| `sort` | `used`, `name`, `files`, or `dirs`; default `used` | Controls envelope construction order. Query tools use their own ordering described below. |
+| `fast` | boolean, default `false` | Approximate accounting. It can omit directory-own bytes, double-count hard links, and traverse mounted filesystems strict mode would skip. |
+| `crossFileSystems` | boolean, default `false` | In strict mode, includes mounted filesystems below the root. Fast mode may cross boundaries even when false. |
+| `maxScanEntries` | positive integer, optional | Traversal budget. Reaching it produces a partial envelope with `RESOURCE_LIMIT_REACHED`. |
+| `maxScanDurationMs` | positive integer, optional | Cooperative duration budget checked during traversal, not a hard preemptive timeout. |
+| `maxOutputEntries` | non-negative integer, optional | Truncates stored `envelope.entries` and sets `limitReached`. |
+| `maxOutputBytes` | non-negative integer, optional | Best-effort serialized-size target. Entries are removed first, then top files and issues. Mandatory fields can still exceed a very small target. |
+| `redactPaths` | boolean, default `false` | Replaces `displayName` and `displayPath` with `[redacted]`; reversible `pathRef` remains. |
+| `background` | boolean, default `false` | Runs in a worker thread and returns before the envelope exists. |
 
-MCP scans always build a snapshot-mode envelope (`effectiveOptions.mode: "snapshot"`). Issue details are enabled by default, subject to `maxOutputBytes` truncation. The MCP tool does not expose a `jobs` argument; it uses the scanner default and reports the resolved value in `effectiveOptions.jobs`.
+MCP scans always build a snapshot-mode envelope with `effectiveOptions.mode: "snapshot"`. The tool does not expose a `jobs` argument; it uses the scanner default.
 
-#### Output
+A successful synchronous result contains:
 
 ```text
 scanId
 schemaVersion
 state
 progress
-[envelope]
+envelope
 ```
 
-`envelope` is present for a successful synchronous scan and omitted from the initial background response.
+An initial background result omits `envelope`.
 
-`progress` contains:
-
-```text
-elapsedMs
-entriesSeen
-filesSeen
-dirsSeen
-errorsSeen
-done
-```
-
-`envelope.topFiles` and `usedu_top_entries` are different views:
-
-- `topFiles` contains the largest regular files found across the traversal and is limited by `top`;
-- `usedu_top_entries` ranks only entries already retained in `envelope.entries`.
+`progress` contains `elapsedMs`, `entriesSeen`, `filesSeen`, `dirsSeen`, `errorsSeen`, and `done`.
 
 ### `usedu_scan_status`
 
-Returns the current state of one session.
-
-#### Input
-
-| Field | Type / default | Behavior |
-| --- | --- | --- |
-| `scanId` | string, required | Session to inspect. |
-| `includeEnvelope` | boolean, default `false` | Adds `envelope` only when the session state is `complete`. |
-
-#### Output
+Input:
 
 ```text
 scanId
-schemaVersion
-state
-progress
-[envelope]
-[message]
+includeEnvelope?   default: false
 ```
 
-`message` is present for `cancelled` and `failed` sessions. Calling this tool refreshes the session's inactivity timestamp.
+`envelope` is added only when `includeEnvelope` is true and the session is `complete`. Calling this tool refreshes the session's inactivity timestamp.
 
 ### `usedu_cancel_scan`
 
-Requests cancellation of a running background scan.
-
-#### Input
+Input:
 
 ```text
 scanId
 ```
 
-#### Output
-
-```text
-scanId
-cancelRequested
-state
-progress
-```
-
-`cancelRequested` is `true` only when the session was still `running`. It does not mean the worker has already stopped.
+`cancelRequested` is true only if the session was still `running`. It does not mean the worker has already stopped.
 
 ### `usedu_list_children`
 
-Lists direct children of an entry from the stored envelope.
-
-#### Input
-
-| Field | Type / default | Behavior |
-| --- | --- | --- |
-| `scanId` | string, required | Must refer to a session whose outer state is `complete`. |
-| `entryId` | string, required | Parent entry. The root entry ID is returned as `envelope.root.entryId`. |
-| `limit` | integer `1..500`, default `50` | Page size. Runtime values are clamped to this range. |
-| `cursor` | string, optional | Opaque continuation cursor returned by the previous call. |
-
-#### Output
+Input:
 
 ```text
 scanId
 entryId
-items
-nextCursor
+limit?    default: 50, runtime range: 1..500
+cursor?
 ```
 
-Current behavior to account for:
+Current behavior:
 
-- only direct children already present in `envelope.entries` are searchable;
-- results are ordered by `usedBytes` descending, regardless of the `sort` passed to `usedu_scan`;
-- an unknown or leaf `entryId` returns an empty page rather than an error;
-- entries omitted by `depth`, `includeFiles`, `maxOutputEntries`, or `maxOutputBytes` cannot be recovered through this tool.
+- only direct children already present in `envelope.entries` are returned;
+- results are ordered by `usedBytes` descending, regardless of the original scan `sort`;
+- an unknown or leaf `entryId` returns an empty list rather than an error;
+- entries omitted by depth or output limits cannot be recovered.
 
 ### `usedu_top_entries`
 
-Ranks retained entries across all retained depths.
-
-#### Input
-
-| Field | Type / default | Behavior |
-| --- | --- | --- |
-| `scanId` | string, required | Must refer to a complete session. |
-| `limit` | integer `1..500`, default `50` | Maximum number of returned entries. Runtime values are clamped to this range. |
-| `kind` | optional enum | `directory`, `regularFile`, `symlink`, or `other`. |
-| `minUsedBytes` | non-negative integer, default `0` | Minimum allocated size. |
-
-#### Output
+Input:
 
 ```text
 scanId
-items
+limit?          default: 50, runtime range: 1..500
+kind?           directory | regularFile | symlink | other
+minUsedBytes?   default: 0
 ```
 
-The root is excluded. Results come from `envelope.entries`, are ordered by `usedBytes` descending, and are not cursor-paginated. This tool does not read `envelope.topFiles` and does not discover entries that were not retained in the original envelope.
+The root is excluded. Results come from all retained `envelope.entries`, are sorted by `usedBytes` descending, and are not cursor-paginated. This tool does not read `envelope.topFiles`.
 
 ### `usedu_get_issues`
 
-Pages through issue details stored in the envelope.
-
-#### Input
-
-| Field | Type / default | Behavior |
-| --- | --- | --- |
-| `scanId` | string, required | Must refer to a complete session. |
-| `limit` | integer `1..500`, default `50` | Page size. Runtime values are clamped to this range. |
-| `cursor` | string, optional | Opaque continuation cursor. |
-
-#### Output
+Input:
 
 ```text
 scanId
-items
-nextCursor
+limit?    default: 50, runtime range: 1..500
+cursor?
 ```
 
-Issues can represent filesystem errors, policy skips, or traversal-budget limits. `envelope.issueSummary` retains aggregate counts even if `maxOutputBytes` removed some issue details; removed details cannot be fetched later from the current session.
+`issueSummary` retains aggregate counts even when `maxOutputBytes` removes issue details. Removed details cannot be fetched later.
 
 ### `usedu_compare`
 
-Compares two stored scan envelopes.
-
-#### Input
+Input:
 
 ```text
 beforeScanId
 afterScanId
 ```
 
-#### Output
-
-A `usedu.diff.v1` envelope containing:
-
-```text
-schemaVersion
-status
-beforeScanId
-afterScanId
-summary
-changes
-```
-
-The comparison uses `pathRef` identity for the root and retained `entries`. It does not compare `topFiles` or issue records.
-
-The implementation automatically marks the diff inexact when either input envelope is not `complete` or when their accounting semantics differ. When a diff is inexact, changes are reported as `uncertain`.
-
-For a meaningful comparison, callers must also use compatible roots and effective options, especially `depth`, `includeFiles`, `dirsOnly`, and output limits. The current implementation does not automatically reject every effective-option mismatch.
-
-A current session-ID limitation also affects comparisons: synchronous scans with the same root, aggregate `usedBytes`, file count, and directory count can reuse the same `scanId`, replacing the earlier session. For a reliable before/after comparison within one server process, run both scans with `background: true`, which allocates distinct process-local session IDs.
+Returns a `usedu.diff.v1` envelope. The comparison uses each envelope's root and retained `entries`, identified by `pathRef`. It does not compare `topFiles` or issue records.
 
 ### `usedu_close_scan`
 
-Removes one session.
-
-#### Input
+Input:
 
 ```text
 scanId
 ```
 
-#### Output
-
-```text
-scanId
-closed
-```
-
-`closed` is `true` when a session was removed and `false` when it was already absent. Closing a running session also requests cancellation.
+`closed` is true when a session was removed. Closing a running session also requests cancellation.
 
 ## Session retention
 
-Sessions are process-local and in memory.
-
 - The default maximum is 8 sessions, configurable with `--max-sessions`.
-- When the table is full, the least recently updated session is removed before inserting the new one.
-- Removing a running session requests cancellation.
+- When full, the least recently updated session is removed before insertion.
 - The inactivity TTL is currently fixed at 30 minutes.
-- Expired sessions are pruned lazily before the next incoming request, not by a dedicated timer.
+- Expiry is checked lazily before the next incoming request, not by a timer.
 - Status and query calls refresh the session timestamp.
+- A `scanId` becomes invalid after process exit, TTL expiry, eviction, or `usedu_close_scan`.
 
-Do not persist a `scanId` or assume it remains valid after server restart, TTL expiry, eviction, or `usedu_close_scan`.
+## Paths and privacy
+
+- `displayName` and `displayPath` are display-only.
+- Use `entryId` for references within one scan.
+- Use `pathRef` for reversible path identity.
+- `redactPaths: true` does not remove `pathRef`.
+
+Because `pathRef` contains reversible Unix path bytes, forwarding it to an untrusted recipient can reveal path information.
+
+## MCP response shape
+
+Every successful `tools/call` returns the tool payload twice:
+
+- `result.structuredContent`: structured data for machine clients;
+- `result.content[0].text`: the same value serialized as JSON text.
+
+Treat `scanId`, `entryId`, and cursors as opaque values. They are not durable IDs.
+
+The current server supports stdio only, advertises MCP protocol version `2024-11-05`, reads one JSON-RPC message per input line, and writes one response per output line. Diagnostics go to stderr.
 
 ## Error model
-
-The server separates protocol/tool errors from scan issues.
 
 | Situation | Result |
 | --- | --- |
 | Unknown JSON-RPC method | JSON-RPC error `-32601` |
-| Argument rejected by runtime validation, unknown tool, invalid cursor, unknown `scanId`, request outside allowlist, query before scan completion, or fatal synchronous scan failure | JSON-RPC error `-32602` |
-| Malformed input that fails before request dispatch, or an internal stdio handler failure | JSON-RPC error `-32603`, generally with `id: null` |
-| Filesystem read failure, cross-filesystem skip, or traversal budget reached after a scan envelope can be built | Successful tool response with structured `envelope.issues` and non-complete `envelope.status` |
-| Fatal error in an already-started background scan | Session state `failed` with `message` |
-| Observed background cancellation | Session state `cancelled` with `message` |
+| Invalid argument, unknown tool, invalid cursor, unknown `scanId`, path outside allowlist, query before completion, or fatal synchronous scan error | JSON-RPC error `-32602` |
+| Malformed input before dispatch or internal stdio handler failure | JSON-RPC error `-32603`, usually with `id: null` |
+| Permission error, filesystem-policy skip, or traversal budget | Successful response with `envelope.issues` and non-complete envelope status |
+| Fatal background error | Session `failed` with `message` |
+| Observed background cancellation | Session `cancelled` with `message` |
 
-A successful JSON-RPC response does not imply a complete filesystem result. Always inspect `envelope.status` and `envelope.issueSummary`.
+A successful JSON-RPC response does not guarantee a complete filesystem result. Inspect `envelope.status` and `envelope.issueSummary`.
 
 ## Current implementation boundaries
 
-The following points describe the current implementation rather than a broader compatibility promise:
-
 - stdio is the only transport;
-- the implemented request methods are `initialize`, `tools/list`, and `tools/call`; requests without an `id` receive no response, and other methods return `-32601`;
-- allowed roots are configured at process startup;
-- sessions and envelopes are not durable; synchronous `scanId` values are not guaranteed to be unique across scans with identical aggregate values;
-- query tools inspect the stored envelope and do not rescan the filesystem;
+- allowed roots are fixed at process startup;
+- sessions are not durable;
+- query tools inspect only the stored envelope and do not rescan;
 - output truncation permanently removes data from that session;
-- `envelope.nextCursor` is part of the JSON v2 envelope, but current MCP query tools do not use it to retrieve truncated envelope data;
+- `envelope.nextCursor` exists in JSON v2, but MCP tools do not use it to retrieve truncated envelope data;
 - `usedu_list_children` and `usedu_top_entries` use allocated-size ordering rather than the original scan sort;
-- fast traversal may cross filesystem boundaries even when `crossFileSystems` is false; the current `semantics.filesystemBoundaryPolicy` reflects the requested flag and does not encode this backend caveat;
-- `tools/list` advertises input schemas; behavior outside those schemas is not part of the contract. Clients should use `structuredContent` and the JSON v2 schema for result validation.
+- importing persistent snapshots or comparing across server restarts through MCP is not implemented.
 
-Related contracts:
+Related documents:
 
 - [Filesystem Semantics](semantics.md)
 - [JSON Contract](json-contract.md)
