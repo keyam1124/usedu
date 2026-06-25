@@ -84,6 +84,8 @@ This model keeps the UI scannable while preserving useful disk-usage totals.
 Scanner code is isolated in the `usedu-core` crate.
 It is independent from terminal output and TUI rendering.
 Report mode, TUI mode, snapshot output, and MCP tools share scanner logic.
+`ScanEngine` accepts `ScanRequest` values and returns `ScanOutcome` values.
+Collectors derive summaries, top-file views, and later protocol-specific views from the outcome without adding terminal concerns to the scanner.
 
 Versioned machine-readable DTOs live in the `usedu-protocol` crate.
 The CLI, TUI, and MCP adapter live in the root `usedu` crate.

@@ -85,6 +85,8 @@ TUI は一階層のブラウザです。
 スキャナーは `usedu-core` crate に分離します。
 ターミナル出力や TUI 描画には依存しません。
 report mode、TUI mode、snapshot output、MCP tool は、同じ scanner logic を共有します。
+`ScanEngine` は `ScanRequest` を受け取り、`ScanOutcome` を返します。
+collector は summary、top-file view、将来の protocol-specific view を outcome から作り、scanner に terminal concern を持ち込みません。
 
 versioned machine-readable DTO は `usedu-protocol` crate に置きます。
 CLI、TUI、MCP adapter は root の `usedu` crate に置きます。
