@@ -65,6 +65,7 @@ pub struct DirSummary {
     pub own_bytes: u64,
     pub file_count: u64,
     pub dir_count: u64,
+    pub counts: EntryCounts,
     pub errors: Vec<ScanErrorRecord>,
     pub children: Vec<EntrySummary>,
 }
@@ -96,6 +97,14 @@ pub struct CurrentLevelScan {
     pub root: DirSummary,
     pub metrics: ScanMetrics,
     pub rows: Vec<EntrySummary>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EntryCounts {
+    pub regular_files: u64,
+    pub directories: u64,
+    pub symlinks: u64,
+    pub other: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,10 +181,62 @@ impl EntrySummary {
             Self::File(_) | Self::Symlink(_) | Self::Other(_) => 0,
         }
     }
+
+    pub fn counts(&self) -> EntryCounts {
+        match self {
+            Self::Dir(summary) => summary.counts,
+            Self::File(_) => EntryCounts::regular_file(),
+            Self::Symlink(_) => EntryCounts::symlink(),
+            Self::Other(_) => EntryCounts::other(),
+        }
+    }
 }
 
 impl DirSummary {
     pub fn errors_count(&self) -> usize {
         self.errors.len()
+    }
+}
+
+impl EntryCounts {
+    pub fn directory() -> Self {
+        Self {
+            directories: 1,
+            ..Default::default()
+        }
+    }
+
+    pub fn regular_file() -> Self {
+        Self {
+            regular_files: 1,
+            ..Default::default()
+        }
+    }
+
+    pub fn symlink() -> Self {
+        Self {
+            symlinks: 1,
+            ..Default::default()
+        }
+    }
+
+    pub fn other() -> Self {
+        Self {
+            other: 1,
+            ..Default::default()
+        }
+    }
+
+    pub fn leaf_total(self) -> u64 {
+        self.regular_files
+            .saturating_add(self.symlinks)
+            .saturating_add(self.other)
+    }
+
+    pub fn saturating_add(&mut self, other: Self) {
+        self.regular_files = self.regular_files.saturating_add(other.regular_files);
+        self.directories = self.directories.saturating_add(other.directories);
+        self.symlinks = self.symlinks.saturating_add(other.symlinks);
+        self.other = self.other.saturating_add(other.other);
     }
 }

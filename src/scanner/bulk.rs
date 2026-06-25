@@ -1,3 +1,4 @@
+use super::result::EntryCounts;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ pub struct BulkAggregate {
     pub entries_seen: u64,
     pub used_bytes: u64,
     pub file_count: u64,
+    pub counts: EntryCounts,
     pub dir_children: Vec<PathBuf>,
     pub errors: Vec<BulkError>,
 }
@@ -45,6 +47,7 @@ pub fn read_dir_fast_aggregate(path: &Path) -> io::Result<Option<BulkAggregate>>
 #[cfg(target_os = "macos")]
 mod imp {
     use super::{BulkAggregate, BulkEntry, BulkEntryKind, BulkError};
+    use crate::scanner::result::EntryCounts;
     use std::cell::RefCell;
     use std::ffi::CString;
     use std::ffi::OsString;
@@ -92,6 +95,7 @@ mod imp {
             entries_seen: 0,
             used_bytes: 0,
             file_count: 0,
+            counts: EntryCounts::default(),
             dir_children: Vec::new(),
             errors: Vec::new(),
         };
@@ -283,6 +287,9 @@ mod imp {
                 aggregate.entries_seen = aggregate.entries_seen.saturating_add(1);
             } else {
                 aggregate.file_count = aggregate.file_count.saturating_add(1);
+                aggregate
+                    .counts
+                    .saturating_add(counts_for_bulk_kind(bulk_kind(obj_type)));
                 aggregate.used_bytes = aggregate.used_bytes.saturating_add(used_bytes);
                 aggregate.entries_seen = aggregate.entries_seen.saturating_add(1);
             }
@@ -361,6 +368,15 @@ mod imp {
             VREG => BulkEntryKind::File,
             VLNK => BulkEntryKind::Symlink,
             _ => BulkEntryKind::Other,
+        }
+    }
+
+    fn counts_for_bulk_kind(kind: BulkEntryKind) -> EntryCounts {
+        match kind {
+            BulkEntryKind::Dir => EntryCounts::directory(),
+            BulkEntryKind::File => EntryCounts::regular_file(),
+            BulkEntryKind::Symlink => EntryCounts::symlink(),
+            BulkEntryKind::Other => EntryCounts::other(),
         }
     }
 

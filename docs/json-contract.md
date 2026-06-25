@@ -2,8 +2,7 @@
 
 [English](json-contract.md) | [日本語](json-contract.ja.md)
 
-This document records the B01 implementation plan.
-It does not change current runtime behavior.
+This document records the B01 compatibility contract and migration plan.
 
 ## Current Contract Problem
 
@@ -16,16 +15,18 @@ That is acceptable only as display data because lossy UTF-8 conversion can chang
 
 ## Compatibility Strategy
 
-Keep the current `--json` output as the current JSON format until a migration is implemented.
-Add an explicit machine format instead of changing the existing format in place:
+Keep the current `--json` output as the current JSON format.
+Use explicit machine formats instead of changing the existing format in place:
 
 ```bash
 usedu report PATH --format json-v2
 usedu report PATH --format ndjson
 usedu schema json-v2
+usedu snapshot PATH > scan.usedu.json
+usedu compare before.usedu.json after.usedu.json
 ```
 
-The current `--json` flag can later become a documented alias for the current format or emit a migration warning on stderr.
+The current `--json` flag is a documented alias for the current JSON format.
 It must not mix progress or diagnostics into stdout.
 
 ## JSON v2 Envelope

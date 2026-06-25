@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/keyam1124/usedu/schemas/usedu-json-v2.schema.json",
+  "title": "usedu scan envelope v2",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "scanId",
+    "status",
+    "semantics",
+    "effectiveOptions",
+    "root",
+    "entries",
+    "topFiles",
+    "issueSummary",
+    "issues"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "usedu.scan.v2" },
+    "scanId": { "type": "string" },
+    "status": { "$ref": "#/$defs/status" },
+    "semantics": { "$ref": "#/$defs/semantics" },
+    "effectiveOptions": { "$ref": "#/$defs/effectiveOptions" },
+    "root": { "$ref": "#/$defs/entry" },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "topFiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/topFile" }
+    },
+    "issueSummary": { "$ref": "#/$defs/issueSummary" },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "nextCursor": {
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "status": {
+      "type": "object",
+      "required": ["state", "partialReasons"],
+      "properties": {
+        "state": {
+          "enum": ["complete", "partial", "cancelled", "limitReached"]
+        },
+        "partialReasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "semantics": {
+      "type": "object",
+      "required": [
+        "sizeMetric",
+        "accountingSource",
+        "accuracy",
+        "hardLinkPolicy",
+        "filesystemBoundaryPolicy",
+        "symlinkPolicy",
+        "directoryOwnBytesIncluded",
+        "reclaimableBytesKnown"
+      ],
+      "properties": {
+        "sizeMetric": { "const": "allocated" },
+        "accountingSource": { "type": "string" },
+        "accuracy": { "enum": ["strict", "approximate"] },
+        "hardLinkPolicy": { "type": "string" },
+        "filesystemBoundaryPolicy": { "type": "string" },
+        "symlinkPolicy": { "type": "string" },
+        "directoryOwnBytesIncluded": { "type": "boolean" },
+        "reclaimableBytesKnown": { "const": false }
+      }
+    },
+    "effectiveOptions": {
+      "type": "object",
+      "required": [
+        "mode",
+        "depth",
+        "top",
+        "includeFiles",
+        "summarize",
+        "dirsOnly",
+        "sort",
+        "showErrors",
+        "fast",
+        "crossFileSystems",
+        "jobs",
+        "maxOutputEntries"
+      ],
+      "properties": {
+        "mode": { "enum": ["report", "snapshot"] },
+        "depth": { "type": "integer", "minimum": 0 },
+        "top": { "type": "integer", "minimum": 0 },
+        "includeFiles": { "type": "boolean" },
+        "summarize": { "type": "boolean" },
+        "dirsOnly": { "type": "boolean" },
+        "sort": { "enum": ["used", "name", "files", "dirs"] },
+        "showErrors": { "type": "boolean" },
+        "fast": { "type": "boolean" },
+        "crossFileSystems": { "type": "boolean" },
+        "jobs": { "type": ["integer", "null"], "minimum": 1 },
+        "maxOutputEntries": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "entryId",
+        "parentEntryId",
+        "kind",
+        "displayName",
+        "displayPath",
+        "pathRef",
+        "usedBytes",
+        "ownBytes",
+        "uniqueBytes",
+        "sharedBytes",
+        "counts",
+        "complete",
+        "issueCountBelow",
+        "skippedCountBelow"
+      ],
+      "properties": {
+        "entryId": { "type": "string" },
+        "parentEntryId": { "type": ["string", "null"] },
+        "kind": { "enum": ["directory", "regularFile", "symlink", "other"] },
+        "displayName": { "type": "string" },
+        "displayPath": { "type": "string" },
+        "pathRef": { "$ref": "#/$defs/pathRef" },
+        "usedBytes": { "type": "integer", "minimum": 0 },
+        "ownBytes": { "type": "integer", "minimum": 0 },
+        "uniqueBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "sharedBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "counts": { "$ref": "#/$defs/counts" },
+        "complete": { "type": "boolean" },
+        "issueCountBelow": { "type": "integer", "minimum": 0 },
+        "skippedCountBelow": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "topFile": {
+      "type": "object",
+      "required": ["entryId", "displayName", "displayPath", "pathRef", "usedBytes"],
+      "properties": {
+        "entryId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "displayPath": { "type": "string" },
+        "pathRef": { "$ref": "#/$defs/pathRef" },
+        "usedBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["regularFiles", "directories", "symlinks", "other"],
+      "properties": {
+        "regularFiles": { "type": "integer", "minimum": 0 },
+        "directories": { "type": "integer", "minimum": 0 },
+        "symlinks": { "type": "integer", "minimum": 0 },
+        "other": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pathRef": {
+      "type": "object",
+      "required": ["encoding", "bytesHex"],
+      "properties": {
+        "encoding": { "const": "unixPathBytesHex" },
+        "bytesHex": { "type": "string", "pattern": "^[0-9a-f]*$" }
+      }
+    },
+    "issueSummary": {
+      "type": "object",
+      "required": ["total", "errors", "warnings", "skipped"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "required": [
+        "code",
+        "severity",
+        "entryId",
+        "displayPath",
+        "pathRef",
+        "rawOsError",
+        "message"
+      ],
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "enum": ["warning", "error"] },
+        "entryId": { "type": ["string", "null"] },
+        "displayPath": { "type": "string" },
+        "pathRef": { "$ref": "#/$defs/pathRef" },
+        "rawOsError": { "type": ["integer", "null"] },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

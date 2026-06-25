@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use usedu::output::json::render_json;
 use usedu::scanner::{
-    DirSummary, EntrySummary, FileSummary, ScanErrorRecord, ScanMetrics, ScanResult,
+    DirSummary, EntryCounts, EntrySummary, FileSummary, ScanErrorRecord, ScanMetrics, ScanResult,
 };
 
 #[test]
@@ -43,6 +43,12 @@ fn current_json_uses_lossy_display_strings_for_non_utf8_paths() {
             own_bytes: 0,
             file_count: 1,
             dir_count: 1,
+            counts: EntryCounts {
+                regular_files: 1,
+                directories: 1,
+                symlinks: 0,
+                other: 0,
+            },
             errors: Vec::new(),
             children: vec![child],
         },
@@ -75,6 +81,12 @@ fn current_json_fixture() -> ScanResult {
             own_bytes: 4_096,
             file_count: 7,
             dir_count: 2,
+            counts: EntryCounts {
+                regular_files: 5,
+                directories: 2,
+                symlinks: 1,
+                other: 1,
+            },
             errors: vec![
                 ScanErrorRecord {
                     path: root.join("locked"),
@@ -95,6 +107,12 @@ fn current_json_fixture() -> ScanResult {
                     own_bytes: 4_096,
                     file_count: 3,
                     dir_count: 1,
+                    counts: EntryCounts {
+                        regular_files: 3,
+                        directories: 1,
+                        symlinks: 0,
+                        other: 0,
+                    },
                     errors: Vec::new(),
                     children: Vec::new(),
                 }),

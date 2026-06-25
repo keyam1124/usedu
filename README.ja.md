@@ -25,6 +25,11 @@ usedu report ~/Library --depth 2 --top 30
 usedu report ~/Library --files
 usedu report ~/Library --fast --summarize
 usedu report ~/Library --json
+usedu report ~/Library --format json-v2
+usedu report ~/Library --format ndjson
+usedu schema json-v2
+usedu snapshot ~/Library > scan.usedu.json
+usedu compare before.usedu.json after.usedu.json
 ```
 
 パスを渡さない場合、`usedu` は現在のディレクトリを TUI で開きます。
@@ -85,6 +90,8 @@ usedu report [PATH]
     --dirs-only             Only show directories in ranking
     --sort used|files|dirs  Sort key. Default: used
     --json                  Output JSON instead of rich text
+    --format text|json-v1|json-v2|ndjson
+                            Output format. Default: text
     --errors                Show error details
     --no-progress           Disable progress indicator
     --cross-file-systems    Allow scanning across mounted filesystems
@@ -93,6 +100,28 @@ usedu report [PATH]
 
 リッチテキスト出力では、走査中にエントリ数、エラー数、経過時間を含む進捗を間引いて表示します。
 JSON 出力と `--no-progress` は進捗表示を抑止します。
+
+`--json` は現在の JSON report format を維持します。
+versioned machine-readable scan envelope を使う場合は `--format json-v2` を指定します。
+line-delimited scan event を使う場合は `--format ndjson` を指定します。
+
+JSON v2 schema は次の command で出力します。
+
+```bash
+usedu schema json-v2
+```
+
+snapshot は stdout に作成します。
+
+```bash
+usedu snapshot [PATH] > scan.usedu.json
+```
+
+2 つの snapshot は次の command で比較します。
+
+```bash
+usedu compare before.usedu.json after.usedu.json
+```
 
 ## サイズの扱い
 
@@ -121,6 +150,9 @@ APFS のクローン、スナップショット、圧縮、スパースファイ
 - 既定では、別デバイス上のマウント済みボリュームをスキップします。
 - ファイルシステム境界をまたぐには `--cross-file-systems` を使います。
 - 複数のハードリンクを持つ通常ファイルは、実用上可能な範囲でデバイスと inode ごとに一度だけ数えます。
+
+machine-readable JSON v2 では、regular file、directory、symlink、other の count を分離します。
+表示専用 path に加えて、可逆的な `pathRef` も含めます。
 
 保護された macOS の場所を走査できない場合は、ターミナルアプリにフルディスクアクセスを付与します。
 

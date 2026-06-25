@@ -25,6 +25,11 @@ usedu report ~/Library --depth 2 --top 30
 usedu report ~/Library --files
 usedu report ~/Library --fast --summarize
 usedu report ~/Library --json
+usedu report ~/Library --format json-v2
+usedu report ~/Library --format ndjson
+usedu schema json-v2
+usedu snapshot ~/Library > scan.usedu.json
+usedu compare before.usedu.json after.usedu.json
 ```
 
 If no path is provided, `usedu` opens the current directory in the TUI.
@@ -85,6 +90,8 @@ Useful options:
     --dirs-only             Only show directories in ranking
     --sort used|files|dirs  Sort key. Default: used
     --json                  Output JSON instead of rich text
+    --format text|json-v1|json-v2|ndjson
+                            Output format. Default: text
     --errors                Show error details
     --no-progress           Disable progress indicator
     --cross-file-systems    Allow scanning across mounted filesystems
@@ -93,6 +100,28 @@ Useful options:
 
 While scanning, rich-text mode shows throttled progress with entries, errors, and elapsed time.
 JSON mode and `--no-progress` suppress the progress indicator.
+
+`--json` keeps the current JSON report format.
+Use `--format json-v2` for the versioned machine-readable scan envelope.
+Use `--format ndjson` for line-delimited scan events.
+
+Print the JSON v2 schema with:
+
+```bash
+usedu schema json-v2
+```
+
+Create a snapshot on stdout with:
+
+```bash
+usedu snapshot [PATH] > scan.usedu.json
+```
+
+Compare two snapshots with:
+
+```bash
+usedu compare before.usedu.json after.usedu.json
+```
 
 ## Size Semantics
 
@@ -121,6 +150,9 @@ That combination is useful when you only need a total-only report and want the l
 - By default, mounted volumes on a different device are skipped.
 - Use `--cross-file-systems` to allow crossing file-system boundaries.
 - Regular files with multiple hard links are counted once per device/inode where practical.
+
+Machine-readable JSON v2 separates regular file, directory, symlink, and other entry counts.
+It also includes display-only paths plus reversible `pathRef` values.
 
 For protected macOS locations, grant Full Disk Access to the terminal app if expected paths are unreadable.
 

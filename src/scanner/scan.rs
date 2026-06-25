@@ -4,8 +4,8 @@ use super::metadata::{allocated_bytes, device_id, inode_id, link_count};
 use super::options::ScanOptions;
 use super::progress::ScanProgress;
 use super::result::{
-    CurrentLevelScan, DirSummary, EntrySummary, FileSummary, ScanErrorRecord, ScanMetrics,
-    ScanResult,
+    CurrentLevelScan, DirSummary, EntryCounts, EntryKind, EntrySummary, FileSummary,
+    ScanErrorRecord, ScanMetrics, ScanResult,
 };
 use anyhow::{anyhow, Context, Result};
 use rayon::prelude::*;
@@ -35,6 +35,7 @@ struct DirTotals {
     used_bytes: u64,
     file_count: u64,
     dir_count: u64,
+    counts: EntryCounts,
     errors: Vec<ScanErrorRecord>,
 }
 
@@ -424,6 +425,7 @@ fn empty_dir_summary_with_own(path: &Path, own_bytes: u64) -> DirSummary {
         own_bytes,
         file_count: 0,
         dir_count: 1,
+        counts: EntryCounts::directory(),
         errors: Vec::new(),
         children: Vec::new(),
     }
@@ -437,6 +439,7 @@ fn empty_dir_summary_fast(path: &Path) -> DirSummary {
         own_bytes: 0,
         file_count: 0,
         dir_count: 1,
+        counts: EntryCounts::directory(),
         errors: Vec::new(),
         children: Vec::new(),
     }
@@ -503,7 +506,7 @@ fn read_children_into(
                     scan_leaf_after_cancel_check(&child_path, entry.file_name(), &metadata, state);
                 add_child_to_summary(summary, child, retain_child);
             } else {
-                let used_bytes = scan_unretained_leaf_after_cancel_check(&metadata, state);
+                let (used_bytes, kind) = scan_unretained_leaf_after_cancel_check(&metadata, state);
                 if metadata.is_file() && state.should_consider_top_file(used_bytes) {
                     let child_path = entry.path();
                     state.record_top_file_candidate(FileSummary {
@@ -512,7 +515,7 @@ fn read_children_into(
                         used_bytes,
                     });
                 }
-                add_leaf_to_summary(summary, used_bytes);
+                add_leaf_to_summary(summary, used_bytes, counts_for_kind(kind));
             }
         }
     }
@@ -590,7 +593,7 @@ fn read_children_fast_into(
                     retain_child,
                 );
             } else {
-                add_leaf_to_summary(summary, 0);
+                add_leaf_to_summary(summary, 0, EntryCounts::symlink());
             }
         } else {
             let metadata = match entry.metadata() {
@@ -625,7 +628,7 @@ fn read_children_fast_into(
                         used_bytes,
                     });
                 }
-                add_leaf_to_summary(summary, used_bytes);
+                add_leaf_to_summary(summary, used_bytes, counts_for_metadata(&metadata));
             }
         }
     }
@@ -674,7 +677,7 @@ fn read_children_fast_bulk_into(
                         true,
                     );
                 } else {
-                    add_leaf_to_summary(summary, 0);
+                    add_leaf_to_summary(summary, 0, EntryCounts::symlink());
                 }
             }
             BulkEntryKind::File | BulkEntryKind::Other => {
@@ -703,7 +706,11 @@ fn read_children_fast_bulk_into(
                             used_bytes: entry.used_bytes,
                         });
                     }
-                    add_leaf_to_summary(summary, entry.used_bytes);
+                    add_leaf_to_summary(
+                        summary,
+                        entry.used_bytes,
+                        counts_for_bulk_kind(entry.kind),
+                    );
                 }
             }
         }
@@ -852,6 +859,7 @@ fn scan_unretained_dir_fast(path: &Path, state: &ScanState) -> Result<DirTotals>
         used_bytes: 0,
         file_count: 0,
         dir_count: 1,
+        counts: EntryCounts::directory(),
         errors: Vec::new(),
     };
     if scan_unretained_dir_fast_bulk_into(&mut totals, path, state)? {
@@ -892,7 +900,7 @@ fn scan_unretained_dir_fast(path: &Path, state: &ScanState) -> Result<DirTotals>
         if file_type.is_dir() && !file_type.is_symlink() {
             dir_children.push(entry.path());
         } else if file_type.is_symlink() {
-            add_leaf_to_totals(&mut totals, 0);
+            add_leaf_to_totals(&mut totals, 0, EntryCounts::symlink());
         } else {
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
@@ -910,7 +918,7 @@ fn scan_unretained_dir_fast(path: &Path, state: &ScanState) -> Result<DirTotals>
                     used_bytes,
                 });
             }
-            add_leaf_to_totals(&mut totals, used_bytes);
+            add_leaf_to_totals(&mut totals, used_bytes, counts_for_metadata(&metadata));
         }
     }
 
@@ -952,7 +960,7 @@ fn scan_unretained_dir_fast_bulk_into(
         state.increment_entries(1);
         match entry.kind {
             BulkEntryKind::Dir => dir_children.push(entry.path),
-            BulkEntryKind::Symlink => add_leaf_to_totals(totals, 0),
+            BulkEntryKind::Symlink => add_leaf_to_totals(totals, 0, EntryCounts::symlink()),
             BulkEntryKind::File | BulkEntryKind::Other => {
                 let is_file = entry.kind == BulkEntryKind::File;
                 if is_file && state.should_consider_top_file(entry.used_bytes) {
@@ -962,7 +970,7 @@ fn scan_unretained_dir_fast_bulk_into(
                         used_bytes: entry.used_bytes,
                     });
                 }
-                add_leaf_to_totals(totals, entry.used_bytes);
+                add_leaf_to_totals(totals, entry.used_bytes, counts_for_bulk_kind(entry.kind));
             }
         }
     }
@@ -996,6 +1004,7 @@ fn scan_unretained_dir_fast_bulk_aggregate_into(
     state.increment_entries(aggregate.entries_seen);
     totals.used_bytes = totals.used_bytes.saturating_add(aggregate.used_bytes);
     totals.file_count = totals.file_count.saturating_add(aggregate.file_count);
+    totals.counts.saturating_add(aggregate.counts);
 
     let dir_totals = scan_unretained_dir_children_fast(aggregate.dir_children, state)?;
     for child in dir_totals {
@@ -1027,6 +1036,7 @@ fn add_child_to_summary(summary: &mut DirSummary, child: EntrySummary, retain_ch
     summary.used_bytes = summary.used_bytes.saturating_add(child.used_bytes());
     summary.file_count = summary.file_count.saturating_add(child.file_count());
     summary.dir_count = summary.dir_count.saturating_add(child.dir_count());
+    summary.counts.saturating_add(child.counts());
     if let Some(child_dir) = child
         .as_dir()
         .filter(|child_dir| !child_dir.errors.is_empty())
@@ -1042,6 +1052,7 @@ fn add_dir_totals_to_summary(summary: &mut DirSummary, child: DirTotals) {
     summary.used_bytes = summary.used_bytes.saturating_add(child.used_bytes);
     summary.file_count = summary.file_count.saturating_add(child.file_count);
     summary.dir_count = summary.dir_count.saturating_add(child.dir_count);
+    summary.counts.saturating_add(child.counts);
     summary.errors.extend(child.errors);
 }
 
@@ -1049,6 +1060,7 @@ fn add_dir_totals_to_totals(totals: &mut DirTotals, child: DirTotals) {
     totals.used_bytes = totals.used_bytes.saturating_add(child.used_bytes);
     totals.file_count = totals.file_count.saturating_add(child.file_count);
     totals.dir_count = totals.dir_count.saturating_add(child.dir_count);
+    totals.counts.saturating_add(child.counts);
     totals.errors.extend(child.errors);
 }
 
@@ -1086,19 +1098,24 @@ fn scan_leaf_after_cancel_check(
     }
 }
 
-fn scan_unretained_leaf_after_cancel_check(metadata: &Metadata, state: &ScanState) -> u64 {
+fn scan_unretained_leaf_after_cancel_check(
+    metadata: &Metadata,
+    state: &ScanState,
+) -> (u64, EntryKind) {
     state.increment_files(1);
-    state.leaf_used_bytes(metadata)
+    (state.leaf_used_bytes(metadata), kind_for_metadata(metadata))
 }
 
-fn add_leaf_to_summary(summary: &mut DirSummary, used_bytes: u64) {
+fn add_leaf_to_summary(summary: &mut DirSummary, used_bytes: u64, counts: EntryCounts) {
     summary.used_bytes = summary.used_bytes.saturating_add(used_bytes);
     summary.file_count = summary.file_count.saturating_add(1);
+    summary.counts.saturating_add(counts);
 }
 
-fn add_leaf_to_totals(totals: &mut DirTotals, used_bytes: u64) {
+fn add_leaf_to_totals(totals: &mut DirTotals, used_bytes: u64, counts: EntryCounts) {
     totals.used_bytes = totals.used_bytes.saturating_add(used_bytes);
     totals.file_count = totals.file_count.saturating_add(1);
+    totals.counts.saturating_add(counts);
 }
 
 fn pseudo_root_for_leaf(path: &Path, own_bytes: u64, entry: EntrySummary) -> DirSummary {
@@ -1109,8 +1126,42 @@ fn pseudo_root_for_leaf(path: &Path, own_bytes: u64, entry: EntrySummary) -> Dir
         own_bytes,
         file_count: 1,
         dir_count: 0,
+        counts: entry.counts(),
         errors: Vec::new(),
         children: vec![entry],
+    }
+}
+
+fn kind_for_metadata(metadata: &Metadata) -> EntryKind {
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        EntryKind::Symlink
+    } else if metadata.is_file() {
+        EntryKind::File
+    } else {
+        EntryKind::Other
+    }
+}
+
+fn counts_for_metadata(metadata: &Metadata) -> EntryCounts {
+    counts_for_kind(kind_for_metadata(metadata))
+}
+
+fn counts_for_kind(kind: EntryKind) -> EntryCounts {
+    match kind {
+        EntryKind::Dir => EntryCounts::directory(),
+        EntryKind::File => EntryCounts::regular_file(),
+        EntryKind::Symlink => EntryCounts::symlink(),
+        EntryKind::Other => EntryCounts::other(),
+    }
+}
+
+fn counts_for_bulk_kind(kind: BulkEntryKind) -> EntryCounts {
+    match kind {
+        BulkEntryKind::Dir => EntryCounts::directory(),
+        BulkEntryKind::File => EntryCounts::regular_file(),
+        BulkEntryKind::Symlink => EntryCounts::symlink(),
+        BulkEntryKind::Other => EntryCounts::other(),
     }
 }
 
