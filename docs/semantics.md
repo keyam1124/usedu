@@ -75,6 +75,8 @@ Machine-readable output should report fast mode as approximate accounting.
 
 A scan can be complete, partial, cancelled, or limit-reached.
 Permission errors and per-entry read failures are partial scan issues, not necessarily fatal command errors.
+Traversal budgets such as max entries or max duration also produce partial scan issues with `RESOURCE_LIMIT_REACHED`.
+Output caps such as max entries or max bytes for the serialized response produce `limitReached` without implying cleanup safety.
 
 `error` means the scan could not read or process an entry.
 `skip` means the scan intentionally did not include an entry because of policy, such as filesystem-boundary enforcement.

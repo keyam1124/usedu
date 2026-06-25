@@ -30,8 +30,27 @@ jobs:
       - name: JSON schema parses
         run: python3 -m json.tool schemas/usedu-json-v2.schema.json >/dev/null
 
+      - name: Benchmark structure guard
+        run: cargo run --release --example bench_scanner -- --runs 1 --compare benchmarks/baseline.json --compare-structure-only
+
       - name: Build x86_64
         run: cargo build --workspace --target x86_64-apple-darwin
 
       - name: Build arm64
         run: cargo build --workspace --target aarch64-apple-darwin
+
+      - name: Release artifact
+        run: scripts/build-macos-release.sh
+
+      - name: Verify release checksums
+        run: shasum -a 256 -c dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usedu-macos-artifacts
+          path: |
+            dist/usedu
+            dist/usedu-aarch64-apple-darwin
+            dist/usedu-x86_64-apple-darwin
+            dist/usedu-macos-universal.tar.gz
+            dist/SHA256SUMS

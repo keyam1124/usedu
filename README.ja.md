@@ -89,12 +89,14 @@ usedu report [PATH]
     --summarize             Show only the total summary
     --fast                  Use faster approximate scanning
     --dirs-only             Only show directories in ranking
-    --sort used|files|dirs  Sort key. Default: used
+    --sort used|name|files|dirs
+                            Sort key. Default: used
     --json                  Output JSON instead of rich text
     --format text|json-v1|json-v2|ndjson
                             Output format. Default: text
     --errors                Show error details
     --redact-paths          Redact display paths in machine-readable output
+    --max-output-bytes <N>  Cap JSON v2/NDJSON output bytes
     --no-progress           Disable progress indicator
     --cross-file-systems    Allow scanning across mounted filesystems
     --jobs <N>              Worker count for parallel scans

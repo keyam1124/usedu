@@ -57,7 +57,7 @@ nextCursor
 - whether directory own bytes are included
 - `reclaimableBytesKnown: false`
 
-`effectiveOptions` must include the resolved values for depth, top limit, file inclusion, directory-only filtering, sort, fast mode, cross-filesystem policy, and output limits.
+`effectiveOptions` must include the resolved values for depth, top limit, file inclusion, directory-only filtering, sort, fast mode, cross-filesystem policy, `maxOutputEntries`, and `maxOutputBytes`.
 
 ## Option Handling
 
@@ -65,10 +65,12 @@ JSON v2 must not silently ignore report options.
 
 - `--top` limits ranking-style result sets and top-file result sets.
 - `--sort` controls deterministic ordering where sorting is requested.
+- `--sort name` is supported in JSON v2 in addition to `used`, `files`, and `dirs`.
 - `--dirs-only` filters ranked entries to directories.
 - `--files` includes top-file entries in the structured result.
 - `--depth` controls retained tree depth only where a tree view is requested; flat entry lists should use pagination or explicit limits.
 - `--errors` includes issue details; issue counts are always available.
+- `--max-output-bytes` caps JSON v2/NDJSON output by truncating structured sections and setting `limitReached`.
 - unsupported option combinations return a structured CLI error before scanning.
 
 ## Identity And Paths

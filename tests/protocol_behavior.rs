@@ -13,8 +13,8 @@ use usedu::protocol::{
     ScanEnvelope, ScanStateDto, SCAN_SCHEMA_VERSION,
 };
 use usedu::scanner::{
-    scan_recursive, DirSummary, EntryCounts, EntrySummary, FileSummary, ScanMetrics, ScanOptions,
-    ScanResult, SortKey,
+    scan_recursive, DirSummary, EntryCounts, EntrySummary, FileSummary, ScanBudget, ScanMetrics,
+    ScanOptions, ScanResult, SortKey,
 };
 
 #[test]
@@ -48,6 +48,7 @@ fn json_v2_envelope_reflects_report_options_and_separate_counts() {
             cross_file_systems: false,
             jobs: Some(1),
             max_output_entries: None,
+            max_output_bytes: None,
             redact_paths: false,
         },
     );
@@ -69,6 +70,58 @@ fn json_v2_envelope_reflects_report_options_and_separate_counts() {
     assert_eq!(envelope.root.counts.symlinks, 1);
     assert_eq!(envelope.root.counts.other, 0);
     assert!(envelope.next_cursor.is_some());
+}
+
+#[test]
+fn json_v2_reports_limit_reached_when_output_bytes_are_capped() {
+    let fixture = Fixture::new("json-v2-output-byte-limit");
+    write_file(&fixture.path("a.txt"), b"a");
+    write_file(&fixture.path("b.txt"), b"b");
+    let scan_options = ScanOptions {
+        include_files_in_output: true,
+        retained_tree_depth: 1,
+        ..Default::default()
+    };
+    let scan = scan_recursive(fixture.root(), &scan_options).unwrap();
+    let mut options = default_report_options();
+    options.max_output_bytes = Some(1);
+
+    let envelope = build_scan_envelope(&scan, &options);
+
+    assert_eq!(envelope.status.state, ScanStateDto::LimitReached);
+    assert!(envelope
+        .status
+        .partial_reasons
+        .iter()
+        .any(|reason| reason == "maxOutputBytes"));
+}
+
+#[test]
+fn json_v2_reports_scan_resource_limits_as_structured_issues() {
+    let fixture = Fixture::new("json-v2-scan-budget");
+    write_file(&fixture.path("a.txt"), b"a");
+    write_file(&fixture.path("b.txt"), b"b");
+    let scan_options = ScanOptions {
+        budget: ScanBudget {
+            max_entries: Some(1),
+            max_duration: None,
+        },
+        ..Default::default()
+    };
+    let scan = scan_recursive(fixture.root(), &scan_options).unwrap();
+
+    let envelope = build_scan_envelope(&scan, &default_report_options());
+
+    assert_eq!(envelope.status.state, ScanStateDto::Partial);
+    assert!(envelope
+        .status
+        .partial_reasons
+        .iter()
+        .any(|reason| reason == "resourceLimitReached"));
+    assert!(envelope
+        .issues
+        .iter()
+        .any(|issue| issue.code == "RESOURCE_LIMIT_REACHED"));
 }
 
 #[test]
@@ -196,6 +249,7 @@ fn default_report_options() -> EnvelopeOptions {
         cross_file_systems: false,
         jobs: None,
         max_output_entries: None,
+        max_output_bytes: None,
         redact_paths: false,
     }
 }
@@ -240,6 +294,7 @@ fn snapshot_fixture(root: &str, entries: &[(&str, u64)]) -> ScanEnvelope {
             cross_file_systems: false,
             jobs: None,
             max_output_entries: None,
+            max_output_bytes: None,
             redact_paths: false,
         },
     )

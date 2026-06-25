@@ -34,6 +34,13 @@ PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo run --release --example bench_scan
 PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo run --release --example bench_scanner -- --runs 7 --compare benchmarks/baseline.json
 ```
 
+CI では、同じ fixture と scenario の比較を release gate として使います。
+ただし、hosted macOS runner は machine 差があるため、timing threshold は無効化します。
+
+```bash
+cargo run --release --example bench_scanner -- --runs 1 --compare benchmarks/baseline.json --compare-structure-only
+```
+
 解釈は次のとおりです。
 
 - 5% 未満、または 5 ms 未満の変化は測定ノイズとして扱います。

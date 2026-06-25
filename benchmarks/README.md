@@ -33,6 +33,12 @@ Do not update it just to hide an unexplained regression.
 PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo run --release --example bench_scanner -- --runs 7 --compare benchmarks/baseline.json
 ```
 
+CI uses the same fixture and scenario comparison as a release gate, but disables timing thresholds because hosted macOS runners vary by machine:
+
+```bash
+cargo run --release --example bench_scanner -- --runs 1 --compare benchmarks/baseline.json --compare-structure-only
+```
+
 Interpretation:
 
 - Changes under 5% or under 5 ms are treated as measurement noise.

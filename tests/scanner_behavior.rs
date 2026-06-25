@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use usedu::scanner::{
     allocated_bytes, scan_current_level, scan_recursive, EntrySummary, ScanBudget,
@@ -344,12 +345,13 @@ fn scan_budget_stops_after_max_entries() {
         ..Default::default()
     };
 
-    let error = scan_recursive(fixture.root(), &options).unwrap_err();
+    let scan = scan_recursive(fixture.root(), &options).unwrap();
 
-    assert!(matches!(
-        error.downcast_ref::<ScannerError>(),
-        Some(ScannerError::ResourceLimitReached("max_entries"))
-    ));
+    assert!(scan
+        .root
+        .errors
+        .iter()
+        .any(|error| error.kind == "resource_limit" && error.message.contains("max_entries")));
 }
 
 #[test]
@@ -364,12 +366,13 @@ fn scan_budget_stops_after_max_duration() {
         ..Default::default()
     };
 
-    let error = scan_recursive(fixture.root(), &options).unwrap_err();
+    let scan = scan_recursive(fixture.root(), &options).unwrap();
 
-    assert!(matches!(
-        error.downcast_ref::<ScannerError>(),
-        Some(ScannerError::ResourceLimitReached("max_duration"))
-    ));
+    assert!(scan
+        .root
+        .errors
+        .iter()
+        .any(|error| error.kind == "resource_limit" && error.message.contains("max_duration")));
 }
 
 #[test]
@@ -384,6 +387,38 @@ fn permission_errors_do_not_abort_scan() {
     fs::set_permissions(fixture.path("locked"), fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(scan.root.file_count, 1);
     assert!(scan.metrics.errors_seen >= 1);
+}
+
+#[test]
+fn file_removed_during_scan_is_recorded_as_error() {
+    let fixture = Fixture::new("race-remove");
+    for index in 0..400 {
+        write_file(&fixture.path(format!("a-{index:04}.txt")), b"file");
+    }
+    let removed_path = fixture.path("zzzz-late.txt");
+    write_file(&removed_path, b"remove during scan");
+    let progress = ScanProgress::new();
+    let remover_progress = progress.clone();
+    let remover_path = removed_path.clone();
+    let remover = thread::spawn(move || {
+        while remover_progress.snapshot().entries_seen < 2 {
+            thread::yield_now();
+        }
+        let _ = fs::remove_file(remover_path);
+    });
+    let options = ScanOptions {
+        progress: Some(progress),
+        ..Default::default()
+    };
+
+    let scan = scan_recursive(fixture.root(), &options).unwrap();
+
+    remover.join().unwrap();
+    assert!(scan
+        .root
+        .errors
+        .iter()
+        .any(|error| error.path == removed_path));
 }
 
 struct Fixture {

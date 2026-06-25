@@ -120,6 +120,13 @@ pub struct ReportArgs {
     )]
     pub redact_paths: bool,
 
+    #[arg(
+        long = "max-output-bytes",
+        value_name = "BYTES",
+        help = "Cap JSON v2/NDJSON output bytes by truncating structured sections"
+    )]
+    pub max_output_bytes: Option<usize>,
+
     #[arg(long = "no-progress", help = "Disable progress indicator")]
     pub no_progress: bool,
 
@@ -170,6 +177,13 @@ pub struct SnapshotArgs {
         help = "Redact displayName and displayPath in the snapshot"
     )]
     pub redact_paths: bool,
+
+    #[arg(
+        long = "max-output-bytes",
+        value_name = "BYTES",
+        help = "Cap snapshot output bytes by truncating structured sections"
+    )]
+    pub max_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -204,6 +218,7 @@ pub struct McpArgs {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ReportSort {
     Used,
+    Name,
     Files,
     Dirs,
 }
@@ -212,6 +227,7 @@ impl From<ReportSort> for SortKey {
     fn from(value: ReportSort) -> Self {
         match value {
             ReportSort::Used => SortKey::Used,
+            ReportSort::Name => SortKey::Name,
             ReportSort::Files => SortKey::Files,
             ReportSort::Dirs => SortKey::Dirs,
         }
@@ -345,6 +361,7 @@ fn run_snapshot(args: SnapshotArgs) -> Result<()> {
         cross_file_systems: args.cross_file_systems,
         jobs: args.jobs,
         max_output_entries: None,
+        max_output_bytes: args.max_output_bytes,
         redact_paths: args.redact_paths,
     };
     println!("{}", render_json_v2(&scan, &options)?);
@@ -418,6 +435,7 @@ fn envelope_options_for_report(args: &ReportArgs, mode: EnvelopeMode) -> Envelop
         cross_file_systems: args.cross_file_systems,
         jobs: args.jobs,
         max_output_entries: None,
+        max_output_bytes: args.max_output_bytes,
         redact_paths: args.redact_paths,
     }
 }

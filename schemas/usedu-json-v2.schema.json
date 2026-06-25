@@ -91,6 +91,7 @@
         "crossFileSystems",
         "jobs",
         "maxOutputEntries",
+        "maxOutputBytes",
         "redactPaths"
       ],
       "properties": {
@@ -106,6 +107,7 @@
         "crossFileSystems": { "type": "boolean" },
         "jobs": { "type": ["integer", "null"], "minimum": 1 },
         "maxOutputEntries": { "type": ["integer", "null"], "minimum": 0 },
+        "maxOutputBytes": { "type": ["integer", "null"], "minimum": 0 },
         "redactPaths": { "type": "boolean" }
       }
     },

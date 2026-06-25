@@ -45,8 +45,9 @@ Callers that must hide reversible path bytes should not forward `pathRef` to unt
 
 MCP sessions have a bounded in-process session table and a TTL.
 Large list operations use cursor pagination and clamp page size.
-Scan output can be limited with `maxOutputEntries`.
+Scan output can be limited with `maxOutputEntries` and `maxOutputBytes`.
 Scan traversal can be bounded with `maxScanEntries` and `maxScanDurationMs`.
+Background MCP scans expose progress through `usedu_scan_status` and can be stopped with `usedu_cancel_scan` or by closing the session.
 
 These controls do not authorize cleanup actions.
 `usedu` never deletes, moves, quarantines, or recommends files for removal.

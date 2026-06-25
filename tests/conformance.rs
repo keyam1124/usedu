@@ -37,6 +37,7 @@ fn cli_json_v2_matches_protocol_conversion_for_same_fixture() {
             cross_file_systems: false,
             jobs: None,
             max_output_entries: None,
+            max_output_bytes: None,
             redact_paths: false,
         },
     );
@@ -110,6 +111,7 @@ fn snapshot_envelope_round_trips_through_json() {
             cross_file_systems: false,
             jobs: None,
             max_output_entries: None,
+            max_output_bytes: None,
             redact_paths: false,
         },
     );

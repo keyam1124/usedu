@@ -82,6 +82,67 @@ fn mcp_stdio_scans_lists_and_closes_sessions() {
 }
 
 #[test]
+fn mcp_stdio_background_scan_reports_progress_and_can_be_cancelled() {
+    let fixture = Fixture::new("mcp-background");
+    for index in 0..400 {
+        let dir = fixture.path(format!("child-{index:04}"));
+        fs::create_dir(&dir).unwrap();
+        write_file(&dir.join("file.txt"), b"file");
+    }
+
+    let mut server = McpProcess::start(fixture.root());
+    let scan = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "usedu_scan",
+            "arguments": {
+                "root": fixture.root(),
+                "background": true,
+                "depth": 1,
+                "includeFiles": true
+            }
+        }
+    }));
+    let scan_id = scan["result"]["structuredContent"]["scanId"]
+        .as_str()
+        .unwrap();
+    assert_eq!(scan["result"]["structuredContent"]["state"], "running");
+
+    let status = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "usedu_scan_status",
+            "arguments": { "scanId": scan_id }
+        }
+    }));
+    assert!(
+        status["result"]["structuredContent"]["progress"]["entriesSeen"]
+            .as_u64()
+            .is_some()
+    );
+
+    let cancel = server.request(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "usedu_cancel_scan",
+            "arguments": { "scanId": scan_id }
+        }
+    }));
+    let structured = &cancel["result"]["structuredContent"];
+    assert!(structured["cancelRequested"].as_bool().is_some());
+    assert!(matches!(
+        structured["state"].as_str().unwrap(),
+        "running" | "complete" | "cancelled"
+    ));
+}
+
+#[test]
 fn mcp_stdio_rejects_paths_outside_allowlist() {
     let fixture = Fixture::new("mcp-allowlist");
     let mut server = McpProcess::start(fixture.root());

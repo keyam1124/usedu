@@ -63,6 +63,12 @@ struct Args {
         help = "Compare current run against a baseline JSON report"
     )]
     compare: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "When comparing, validate fixture shape and scan totals without timing thresholds"
+    )]
+    compare_structure_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +201,15 @@ fn main() -> Result<()> {
 
     if let Some(path) = &args.compare {
         let baseline = read_baseline(path)?;
-        print_comparison(path, &baseline, &report)?;
+        if args.compare_structure_only {
+            validate_comparable_baseline(path, &baseline, &report)?;
+            println!(
+                "Benchmark structure guard passed against {}",
+                path.display()
+            );
+        } else {
+            print_comparison(path, &baseline, &report)?;
+        }
     }
 
     if let Some(path) = &args.write_json {

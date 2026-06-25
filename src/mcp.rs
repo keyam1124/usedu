@@ -2,7 +2,9 @@ use crate::protocol::{
     build_scan_envelope, diff_snapshots, EntryDto, EnvelopeMode, EnvelopeOptions, ScanEnvelope,
     SCAN_SCHEMA_VERSION,
 };
-use crate::scanner::{scan_recursive, ScanBudget, ScanOptions, SortKey};
+use crate::scanner::{
+    scan_recursive, ScanBudget, ScanCancellation, ScanOptions, ScanProgress, ScannerError, SortKey,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,6 +12,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -45,8 +48,18 @@ struct RpcRequest {
 
 #[derive(Debug)]
 struct Session {
-    envelope: ScanEnvelope,
+    state: SessionState,
     updated_at: Instant,
+    progress: ScanProgress,
+    cancellation: ScanCancellation,
+}
+
+#[derive(Debug)]
+enum SessionState {
+    Running,
+    Complete(Box<ScanEnvelope>),
+    Cancelled(String),
+    Failed(String),
 }
 
 pub fn run_stdio(config: McpServerConfig) -> Result<()> {
@@ -80,7 +93,8 @@ struct McpServer {
     allowed_roots: Vec<PathBuf>,
     max_sessions: usize,
     session_ttl: Duration,
-    sessions: HashMap<String, Session>,
+    sessions: HashMap<String, Arc<Mutex<Session>>>,
+    next_session_id: u64,
 }
 
 impl McpServer {
@@ -102,6 +116,7 @@ impl McpServer {
             max_sessions: config.max_sessions.max(1),
             session_ttl: config.session_ttl,
             sessions: HashMap::new(),
+            next_session_id: 1,
         })
     }
 
@@ -157,7 +172,32 @@ impl McpServer {
                             "maxScanEntries": { "type": "integer", "minimum": 1 },
                             "maxScanDurationMs": { "type": "integer", "minimum": 1 },
                             "maxOutputEntries": { "type": "integer", "minimum": 0 },
-                            "redactPaths": { "type": "boolean", "default": false }
+                            "maxOutputBytes": { "type": "integer", "minimum": 0 },
+                            "redactPaths": { "type": "boolean", "default": false },
+                            "background": { "type": "boolean", "default": false }
+                        }
+                    })
+                ),
+                tool_schema(
+                    "usedu_scan_status",
+                    "Return progress and completion state for a stored scan session.",
+                    json!({
+                        "type": "object",
+                        "required": ["scanId"],
+                        "properties": {
+                            "scanId": { "type": "string" },
+                            "includeEnvelope": { "type": "boolean", "default": false }
+                        }
+                    })
+                ),
+                tool_schema(
+                    "usedu_cancel_scan",
+                    "Request cancellation for a running scan session.",
+                    json!({
+                        "type": "object",
+                        "required": ["scanId"],
+                        "properties": {
+                            "scanId": { "type": "string" }
                         }
                     })
                 ),
@@ -240,6 +280,8 @@ impl McpServer {
             .unwrap_or_else(|| json!({}));
         let structured = match name {
             "usedu_scan" => self.usedu_scan(arguments)?,
+            "usedu_scan_status" => self.usedu_scan_status(arguments)?,
+            "usedu_cancel_scan" => self.usedu_cancel_scan(arguments)?,
             "usedu_list_children" => self.usedu_list_children(arguments)?,
             "usedu_top_entries" => self.usedu_top_entries(arguments)?,
             "usedu_get_issues" => self.usedu_get_issues(arguments)?,
@@ -272,7 +314,11 @@ impl McpServer {
         let max_scan_duration =
             optional_u64(&arguments, "maxScanDurationMs")?.map(Duration::from_millis);
         let max_output_entries = optional_usize(&arguments, "maxOutputEntries")?;
+        let max_output_bytes = optional_usize(&arguments, "maxOutputBytes")?;
         let redact_paths = optional_bool(&arguments, "redactPaths").unwrap_or(false);
+        let background = optional_bool(&arguments, "background").unwrap_or(false);
+        let progress = ScanProgress::new();
+        let cancellation = ScanCancellation::default();
 
         let scan_options = ScanOptions {
             cross_file_systems,
@@ -281,39 +327,113 @@ impl McpServer {
             retained_tree_depth: depth,
             retain_root_children: true,
             fast,
+            progress: Some(progress.clone()),
+            cancellation: Some(cancellation.clone()),
             budget: ScanBudget {
                 max_entries: max_scan_entries,
                 max_duration: max_scan_duration,
             },
             ..Default::default()
         };
+        let envelope_options = EnvelopeOptions {
+            mode: EnvelopeMode::Snapshot,
+            depth,
+            top,
+            include_files,
+            summarize: false,
+            dirs_only,
+            sort_key,
+            show_errors: true,
+            fast,
+            cross_file_systems,
+            jobs: scan_options.jobs,
+            max_output_entries,
+            max_output_bytes,
+            redact_paths,
+        };
 
-        let scan = scan_recursive(root, &scan_options)?;
-        let envelope = build_scan_envelope(
-            &scan,
-            &EnvelopeOptions {
-                mode: EnvelopeMode::Snapshot,
-                depth,
-                top,
-                include_files,
-                summarize: false,
-                dirs_only,
-                sort_key,
-                show_errors: true,
-                fast,
-                cross_file_systems,
-                jobs: scan_options.jobs,
-                max_output_entries,
-                redact_paths,
-            },
-        );
+        if background {
+            let scan_id = self.next_scan_id();
+            let session = Arc::new(Mutex::new(Session {
+                state: SessionState::Running,
+                updated_at: Instant::now(),
+                progress: progress.clone(),
+                cancellation: cancellation.clone(),
+            }));
+            self.insert_session(scan_id.clone(), session.clone());
+            spawn_background_scan(
+                scan_id.clone(),
+                root,
+                scan_options,
+                envelope_options,
+                session,
+            );
+            return Ok(json!({
+                "scanId": scan_id,
+                "schemaVersion": SCAN_SCHEMA_VERSION,
+                "state": "running",
+                "progress": progress_value(&progress)
+            }));
+        }
+
+        let scan = scan_recursive(&root, &scan_options)?;
+        let envelope = build_scan_envelope(&scan, &envelope_options);
         let scan_id = envelope.scan_id.clone();
-        self.insert_session(envelope.clone());
+        self.insert_complete_session(envelope.clone(), progress.clone(), cancellation);
 
         Ok(json!({
             "scanId": scan_id,
             "schemaVersion": SCAN_SCHEMA_VERSION,
+            "state": "complete",
+            "progress": progress_value(&progress),
             "envelope": envelope
+        }))
+    }
+
+    fn usedu_scan_status(&mut self, arguments: Value) -> Result<Value> {
+        let scan_id = required_string(&arguments, "scanId")?;
+        let include_envelope = optional_bool(&arguments, "includeEnvelope").unwrap_or(false);
+        let session = self.session_arc(scan_id)?;
+        let mut session = session
+            .lock()
+            .map_err(|_| anyhow!("MCP session mutex poisoned"))?;
+        session.updated_at = Instant::now();
+        let mut value = json!({
+            "scanId": scan_id,
+            "schemaVersion": SCAN_SCHEMA_VERSION,
+            "state": session_state_label(&session.state),
+            "progress": progress_value(&session.progress)
+        });
+        if include_envelope {
+            if let SessionState::Complete(envelope) = &session.state {
+                value["envelope"] = json!(envelope);
+            }
+        }
+        match &session.state {
+            SessionState::Cancelled(message) | SessionState::Failed(message) => {
+                value["message"] = json!(message);
+            }
+            SessionState::Running | SessionState::Complete(_) => {}
+        }
+        Ok(value)
+    }
+
+    fn usedu_cancel_scan(&mut self, arguments: Value) -> Result<Value> {
+        let scan_id = required_string(&arguments, "scanId")?;
+        let session = self.session_arc(scan_id)?;
+        let mut session = session
+            .lock()
+            .map_err(|_| anyhow!("MCP session mutex poisoned"))?;
+        session.updated_at = Instant::now();
+        let cancel_requested = matches!(session.state, SessionState::Running);
+        if cancel_requested {
+            session.cancellation.cancel();
+        }
+        Ok(json!({
+            "scanId": scan_id,
+            "cancelRequested": cancel_requested,
+            "state": session_state_label(&session.state),
+            "progress": progress_value(&session.progress)
         }))
     }
 
@@ -322,7 +442,7 @@ impl McpServer {
         let entry_id = required_string(&arguments, "entryId")?;
         let limit = page_limit(&arguments)?;
         let offset = cursor_offset(arguments.get("cursor").and_then(Value::as_str))?;
-        let envelope = self.session(scan_id)?;
+        let envelope = self.session_envelope(scan_id)?;
         let mut rows: Vec<EntryDto> = envelope
             .entries
             .iter()
@@ -344,7 +464,7 @@ impl McpServer {
         let limit = page_limit(&arguments)?;
         let kind = arguments.get("kind").and_then(Value::as_str);
         let min_used_bytes = optional_u64(&arguments, "minUsedBytes")?.unwrap_or(0);
-        let envelope = self.session(scan_id)?;
+        let envelope = self.session_envelope(scan_id)?;
         let mut rows: Vec<EntryDto> = envelope
             .entries
             .iter()
@@ -364,7 +484,7 @@ impl McpServer {
         let scan_id = required_string(&arguments, "scanId")?;
         let limit = page_limit(&arguments)?;
         let offset = cursor_offset(arguments.get("cursor").and_then(Value::as_str))?;
-        let envelope = self.session(scan_id)?;
+        let envelope = self.session_envelope(scan_id)?;
         let (items, next_cursor) = page(envelope.issues.clone(), offset, limit);
         Ok(json!({
             "scanId": scan_id,
@@ -376,14 +496,14 @@ impl McpServer {
     fn usedu_compare(&mut self, arguments: Value) -> Result<Value> {
         let before_scan_id = required_string(&arguments, "beforeScanId")?;
         let after_scan_id = required_string(&arguments, "afterScanId")?;
-        let before = self.session(before_scan_id)?.clone();
-        let after = self.session(after_scan_id)?.clone();
+        let before = self.session_envelope(before_scan_id)?;
+        let after = self.session_envelope(after_scan_id)?;
         Ok(json!(diff_snapshots(&before, &after)))
     }
 
     fn usedu_close_scan(&mut self, arguments: Value) -> Result<Value> {
         let scan_id = required_string(&arguments, "scanId")?;
-        let removed = self.sessions.remove(scan_id).is_some();
+        let removed = self.remove_session(scan_id).is_some();
         Ok(json!({
             "scanId": scan_id,
             "closed": removed
@@ -404,41 +524,161 @@ impl McpServer {
         bail!("path is outside the MCP allowlist: {}", path.display())
     }
 
-    fn insert_session(&mut self, envelope: ScanEnvelope) {
+    fn next_scan_id(&mut self) -> String {
+        let id = self.next_session_id;
+        self.next_session_id = self.next_session_id.saturating_add(1);
+        format!("mcp_scan_{id:016x}")
+    }
+
+    fn insert_complete_session(
+        &mut self,
+        envelope: ScanEnvelope,
+        progress: ScanProgress,
+        cancellation: ScanCancellation,
+    ) {
+        self.insert_session(
+            envelope.scan_id.clone(),
+            Arc::new(Mutex::new(Session {
+                state: SessionState::Complete(Box::new(envelope)),
+                updated_at: Instant::now(),
+                progress,
+                cancellation,
+            })),
+        );
+    }
+
+    fn insert_session(&mut self, scan_id: String, session: Arc<Mutex<Session>>) {
         while self.sessions.len() >= self.max_sessions {
             let Some(oldest) = self
                 .sessions
                 .iter()
-                .min_by_key(|(_, session)| session.updated_at)
+                .min_by_key(|(_, session)| {
+                    session
+                        .lock()
+                        .map(|session| session.updated_at)
+                        .unwrap_or_else(|_| Instant::now())
+                })
                 .map(|(scan_id, _)| scan_id.clone())
             else {
                 break;
             };
-            self.sessions.remove(&oldest);
+            self.remove_session(&oldest);
         }
-        self.sessions.insert(
-            envelope.scan_id.clone(),
-            Session {
-                envelope,
-                updated_at: Instant::now(),
-            },
-        );
+        self.sessions.insert(scan_id, session);
     }
 
-    fn session(&mut self, scan_id: &str) -> Result<&ScanEnvelope> {
-        let session = self
-            .sessions
-            .get_mut(scan_id)
-            .ok_or_else(|| anyhow!("unknown scanId: {scan_id}"))?;
+    fn remove_session(&mut self, scan_id: &str) -> Option<Arc<Mutex<Session>>> {
+        let removed = self.sessions.remove(scan_id);
+        if let Some(session) = &removed {
+            if let Ok(session) = session.lock() {
+                if matches!(session.state, SessionState::Running) {
+                    session.cancellation.cancel();
+                }
+            }
+        }
+        removed
+    }
+
+    fn session_arc(&mut self, scan_id: &str) -> Result<Arc<Mutex<Session>>> {
+        self.sessions
+            .get(scan_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown scanId: {scan_id}"))
+    }
+
+    fn session_envelope(&mut self, scan_id: &str) -> Result<ScanEnvelope> {
+        let session = self.session_arc(scan_id)?;
+        let mut session = session
+            .lock()
+            .map_err(|_| anyhow!("MCP session mutex poisoned"))?;
         session.updated_at = Instant::now();
-        Ok(&session.envelope)
+        match &session.state {
+            SessionState::Complete(envelope) => Ok(envelope.as_ref().clone()),
+            SessionState::Running => bail!("scan is still running: {scan_id}"),
+            SessionState::Cancelled(message) => bail!("scan was cancelled: {message}"),
+            SessionState::Failed(message) => bail!("scan failed: {message}"),
+        }
     }
 
     fn prune_expired_sessions(&mut self) {
         let now = Instant::now();
-        self.sessions
-            .retain(|_, session| now.duration_since(session.updated_at) <= self.session_ttl);
+        let expired = self
+            .sessions
+            .iter()
+            .filter_map(|(scan_id, session)| {
+                let is_expired = session
+                    .lock()
+                    .map(|session| now.duration_since(session.updated_at) > self.session_ttl)
+                    .unwrap_or(true);
+                is_expired.then(|| scan_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for scan_id in expired {
+            self.remove_session(&scan_id);
+        }
     }
+}
+
+fn spawn_background_scan(
+    scan_id: String,
+    root: PathBuf,
+    scan_options: ScanOptions,
+    envelope_options: EnvelopeOptions,
+    session: Arc<Mutex<Session>>,
+) {
+    std::thread::spawn(move || {
+        let state = match scan_recursive(&root, &scan_options) {
+            Ok(scan) => {
+                let mut envelope = build_scan_envelope(&scan, &envelope_options);
+                envelope.scan_id = scan_id;
+                SessionState::Complete(Box::new(envelope))
+            }
+            Err(error) => session_state_from_error(error),
+        };
+        if let Some(progress) = &scan_options.progress {
+            progress.mark_done();
+        }
+        if let Ok(mut session) = session.lock() {
+            session.state = state;
+            session.updated_at = Instant::now();
+        }
+    });
+}
+
+fn session_state_from_error(error: anyhow::Error) -> SessionState {
+    if matches!(
+        error.downcast_ref::<ScannerError>(),
+        Some(ScannerError::Cancelled)
+    ) {
+        SessionState::Cancelled(error.to_string())
+    } else {
+        SessionState::Failed(error.to_string())
+    }
+}
+
+fn session_state_label(state: &SessionState) -> &'static str {
+    match state {
+        SessionState::Running => "running",
+        SessionState::Complete(_) => "complete",
+        SessionState::Cancelled(_) => "cancelled",
+        SessionState::Failed(_) => "failed",
+    }
+}
+
+fn progress_value(progress: &ScanProgress) -> Value {
+    let snapshot = progress.snapshot();
+    json!({
+        "elapsedMs": duration_millis_u64(snapshot.elapsed),
+        "entriesSeen": snapshot.entries_seen,
+        "filesSeen": snapshot.files_seen,
+        "dirsSeen": snapshot.dirs_seen,
+        "errorsSeen": snapshot.errors_seen,
+        "done": snapshot.done
+    })
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn success_response(id: Value, result: Value) -> Value {

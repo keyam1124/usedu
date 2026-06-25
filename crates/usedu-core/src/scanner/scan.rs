@@ -69,14 +69,21 @@ pub fn scan_recursive(path: impl AsRef<Path>, options: &ScanOptions) -> Result<S
     let _progress_guard = ProgressGuard::new(state.options.progress.clone());
     state.increment_entries(1)?;
 
-    let mut root = if state.options.fast && metadata.is_dir() && !metadata.file_type().is_symlink()
-    {
-        scan_dir_fast(&path, &state, 0)?
-    } else if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        scan_dir(&path, &metadata, &state, 0)?
-    } else {
-        let entry = scan_leaf(&path, display_name(&path), &metadata, &state)?;
-        pseudo_root_for_leaf(&path, allocated_bytes(&metadata), entry)
+    let root_result =
+        if state.options.fast && metadata.is_dir() && !metadata.file_type().is_symlink() {
+            scan_dir_fast(&path, &state, 0)
+        } else if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            scan_dir(&path, &metadata, &state, 0)
+        } else {
+            scan_leaf(&path, display_name(&path), &metadata, &state)
+                .map(|entry| pseudo_root_for_leaf(&path, allocated_bytes(&metadata), entry))
+        };
+    let mut root = match root_result {
+        Ok(root) => root,
+        Err(error) if is_resource_limit_error(&error) => {
+            partial_root_for_resource_limit(&path, &metadata, &state, error)
+        }
+        Err(error) => return Err(error),
     };
 
     let elapsed = started.elapsed();
@@ -109,14 +116,19 @@ pub fn scan_current_level(
     state.increment_entries(1)?;
     state.increment_dirs(1);
 
-    let mut root = if state.options.fast {
+    let root_result = if state.options.fast {
         let mut root = empty_dir_summary_fast(&path);
-        read_children_fast_into(&mut root, &state, 0)?;
-        root
+        read_children_fast_into(&mut root, &state, 0).map(|()| root)
     } else {
         let mut root = empty_dir_summary(&path, &metadata);
-        read_children_into(&mut root, &state, 0)?;
-        root
+        read_children_into(&mut root, &state, 0).map(|()| root)
+    };
+    let mut root = match root_result {
+        Ok(root) => root,
+        Err(error) if is_resource_limit_error(&error) => {
+            partial_root_for_resource_limit(&path, &metadata, &state, error)
+        }
+        Err(error) => return Err(error),
     };
     let elapsed = started.elapsed();
     root.errors = state.errors();
@@ -1161,6 +1173,43 @@ fn pseudo_root_for_leaf(path: &Path, own_bytes: u64, entry: EntrySummary) -> Dir
         errors: Vec::new(),
         children: vec![entry],
     }
+}
+
+fn partial_root_for_resource_limit(
+    path: &Path,
+    metadata: &Metadata,
+    state: &ScanState,
+    error: anyhow::Error,
+) -> DirSummary {
+    let mut root = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        if state.options.fast {
+            empty_dir_summary_fast(path)
+        } else {
+            empty_dir_summary(path, metadata)
+        }
+    } else {
+        DirSummary {
+            path: path.to_path_buf(),
+            name: display_name(path),
+            used_bytes: allocated_bytes(metadata),
+            own_bytes: allocated_bytes(metadata),
+            file_count: 1,
+            dir_count: 0,
+            counts: counts_for_metadata(metadata),
+            errors: Vec::new(),
+            children: Vec::new(),
+        }
+    };
+    let record = state.record_error(path.to_path_buf(), "resource_limit", error.to_string());
+    root.errors.push(record);
+    root
+}
+
+fn is_resource_limit_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<ScannerError>(),
+        Some(ScannerError::ResourceLimitReached(_))
+    )
 }
 
 fn kind_for_metadata(metadata: &Metadata) -> EntryKind {

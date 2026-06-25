@@ -58,7 +58,7 @@ nextCursor
 - directory own bytes を含むかどうか
 - `reclaimableBytesKnown: false`
 
-`effectiveOptions` には、depth、top limit、file inclusion、directory-only filtering、sort、fast mode、cross-filesystem policy、output limit の解決済み値を含めます。
+`effectiveOptions` には、depth、top limit、file inclusion、directory-only filtering、sort、fast mode、cross-filesystem policy、`maxOutputEntries`、`maxOutputBytes` の解決済み値を含めます。
 
 ## option の扱い
 
@@ -66,10 +66,12 @@ JSON v2 では、report option を黙って無視しません。
 
 - `--top` は ranking-style result set と top-file result set の件数を制限する。
 - `--sort` は sort が要求される場所の deterministic ordering を制御する。
+- `--sort name` は `used`、`files`、`dirs` と同じく JSON v2 で利用できる。
 - `--dirs-only` は ranked entries を directory に絞る。
 - `--files` は structured result に top-file entries を含める。
 - `--depth` は tree view が要求される場合だけ retained tree depth を制御する。flat entry list は pagination または明示的な limit を使う。
 - `--errors` は issue details を含める。issue count は常に利用できる。
+- `--max-output-bytes` は structured section を削り、`limitReached` を設定して JSON v2/NDJSON output を制限する。
 - unsupported option combination は、走査前に structured CLI error として返す。
 
 ## identity と path

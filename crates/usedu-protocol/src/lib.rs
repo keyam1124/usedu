@@ -86,6 +86,7 @@ pub struct EffectiveOptionsDto {
     pub cross_file_systems: bool,
     pub jobs: Option<usize>,
     pub max_output_entries: Option<usize>,
+    pub max_output_bytes: Option<usize>,
     pub redact_paths: bool,
 }
 
@@ -178,6 +179,7 @@ pub struct EnvelopeOptions {
     pub cross_file_systems: bool,
     pub jobs: Option<usize>,
     pub max_output_entries: Option<usize>,
+    pub max_output_bytes: Option<usize>,
     pub redact_paths: bool,
 }
 
@@ -277,7 +279,7 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
         .count() as u64;
     let issue_total = scan.root.errors.len() as u64;
 
-    ScanEnvelope {
+    let mut envelope = ScanEnvelope {
         schema_version: SCAN_SCHEMA_VERSION.to_string(),
         scan_id,
         status: ScanStatusDto {
@@ -288,7 +290,7 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
             } else {
                 ScanStateDto::Partial
             },
-            partial_reasons: partial_reasons(issue_total, limit_reached),
+            partial_reasons: partial_reasons(&scan.root.errors, limit_reached),
         },
         semantics: semantics(options),
         effective_options: effective_options(options),
@@ -311,18 +313,58 @@ pub fn build_scan_envelope(scan: &ScanResult, options: &EnvelopeOptions) -> Scan
         },
         issues,
         next_cursor,
-    }
+    };
+    apply_output_byte_limit(&mut envelope, options.max_output_bytes);
+    envelope
 }
 
-fn partial_reasons(issue_total: u64, limit_reached: bool) -> Vec<String> {
+fn partial_reasons(issues: &[ScanErrorRecord], limit_reached: bool) -> Vec<String> {
     let mut reasons = Vec::new();
-    if issue_total > 0 {
+    if !issues.is_empty() {
         reasons.push("issuesRecorded".to_string());
+    }
+    if issues.iter().any(|issue| issue.kind == "resource_limit") {
+        reasons.push("resourceLimitReached".to_string());
     }
     if limit_reached {
         reasons.push("maxOutputEntries".to_string());
     }
     reasons
+}
+
+fn apply_output_byte_limit(envelope: &mut ScanEnvelope, max_output_bytes: Option<usize>) {
+    let Some(max_output_bytes) = max_output_bytes else {
+        return;
+    };
+    let mut truncated_entries = false;
+    let mut truncated = false;
+    while serialized_len(envelope) > max_output_bytes {
+        if envelope.entries.pop().is_some() {
+            truncated_entries = true;
+            truncated = true;
+        } else if envelope.top_files.pop().is_some() || envelope.issues.pop().is_some() {
+            truncated = true;
+        } else {
+            break;
+        }
+    }
+    if truncated {
+        envelope.status.state = ScanStateDto::LimitReached;
+        push_unique_reason(&mut envelope.status.partial_reasons, "maxOutputBytes");
+        if truncated_entries && envelope.next_cursor.is_none() {
+            envelope.next_cursor = Some(cursor_for_offset(envelope.entries.len()));
+        }
+    }
+}
+
+fn serialized_len(envelope: &ScanEnvelope) -> usize {
+    serde_json::to_vec(envelope).map_or(usize::MAX, |bytes| bytes.len())
+}
+
+fn push_unique_reason(reasons: &mut Vec<String>, reason: &str) {
+    if !reasons.iter().any(|existing| existing == reason) {
+        reasons.push(reason.to_string());
+    }
 }
 
 pub fn render_json_v2(scan: &ScanResult, options: &EnvelopeOptions) -> anyhow::Result<String> {
@@ -637,6 +679,7 @@ fn issue_code(error: &ScanErrorRecord) -> &'static str {
         "PermissionDenied" => "PERMISSION_DENIED",
         "NotFound" => "NOT_FOUND_DURING_SCAN",
         "cross_file_system" => "CROSS_FILESYSTEM_SKIPPED",
+        "resource_limit" => "RESOURCE_LIMIT_REACHED",
         "InvalidInput" => "INVALID_PATH",
         _ => "UNSUPPORTED_FILE_TYPE",
     }
@@ -713,6 +756,7 @@ fn effective_options(options: &EnvelopeOptions) -> EffectiveOptionsDto {
         cross_file_systems: options.cross_file_systems,
         jobs: options.jobs,
         max_output_entries: options.max_output_entries,
+        max_output_bytes: options.max_output_bytes,
         redact_paths: options.redact_paths,
     }
 }

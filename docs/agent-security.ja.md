@@ -46,8 +46,9 @@ CLI の machine output では `--redact-paths`、MCP scan では `redactPaths: t
 
 MCP session は、上限付きの in-process session table と TTL を持ちます。
 大量の list operation では cursor pagination を使い、page size を上限内に丸めます。
-scan output は `maxOutputEntries` で制限できます。
+scan output は `maxOutputEntries` と `maxOutputBytes` で制限できます。
 scan traversal は `maxScanEntries` と `maxScanDurationMs` で制限できます。
+background MCP scan は `usedu_scan_status` で progress を公開し、`usedu_cancel_scan` または session close で停止できます。
 
 これらの制御は cleanup action を許可するものではありません。
 `usedu` は、ファイルの削除、移動、隔離、削除推薦を行いません。
